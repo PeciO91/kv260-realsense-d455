@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Models
+*.xmodel
+*.onnx
+*.pt
+*.pth
+
+# Runtime output
+*.jpg
+*.jpeg
+*.png
+output/
+runs/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
