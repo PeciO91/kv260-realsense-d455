@@ -74,6 +74,28 @@ Alternative:
         --stream-fps 20 \
         --jpeg-quality 80
 
+## DenseBox telemetry
+
+The live DenseBox stream draws a compact telemetry panel over the MJPEG
+video. It updates approximately once per second and shows:
+
+- **Stream FPS**: annotated JPEG frames successfully sent to the MJPEG client
+  per second. This is the observable output rate.
+- **Pipeline FPS**: completed camera, alignment, preprocessing, inference,
+  depth-processing, and drawing iterations per second.
+- **DPU latency**: average time spent only in `detector->run(model_input)`.
+- **DPU rate**: `1000 / DPU latency (ms)`. This is the accelerator's
+  inference-throughput equivalent, not the complete application's frame rate.
+- CPU utilization from `/proc/stat` deltas and used RAM from
+  `MemTotal - MemAvailable`.
+- PS and PL temperatures from the Xilinx AMS hwmon device when available.
+- Board power, voltage, and current from the INA260 hwmon device when
+  available.
+
+Optional alignment, preprocessing, postprocessing, and JPEG timing values are
+reported in the console. Hardware monitoring devices are discovered by their
+hwmon names; unavailable metrics display as `N/A` and do not stop streaming.
+
 ## RealSense backend
 
 The standard V4L2/UVC backend caused a kernel crash during

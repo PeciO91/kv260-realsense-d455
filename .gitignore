@@ -31,3 +31,7 @@ runs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Windows Mark of the Web
+*:Zone.Identifier
+Zone.Identifier
