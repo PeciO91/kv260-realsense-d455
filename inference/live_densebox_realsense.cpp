@@ -32,8 +32,11 @@ constexpr int DEFAULT_COLOR_HEIGHT = 480;
 constexpr int DEFAULT_COLOR_FPS = 30;
 constexpr float DEPTH_ROI_SCALE = 0.35f;
 constexpr double TELEMETRY_INTERVAL_SECONDS = 1.0;
-constexpr int TELEMETRY_PANEL_WIDTH = 300;
-constexpr int TELEMETRY_PANEL_HEIGHT = 260;
+constexpr int TELEMETRY_MARGIN = 4;
+constexpr int PERFORMANCE_PANEL_WIDTH = 185;
+constexpr int PERFORMANCE_PANEL_HEIGHT = 86;
+constexpr int SYSTEM_PANEL_WIDTH = 215;
+constexpr int SYSTEM_PANEL_HEIGHT = 128;
 
 using Clock = std::chrono::steady_clock;
 
@@ -933,80 +936,143 @@ void draw_telemetry(
     const PerformanceStats& performance,
     const SystemStats& system)
 {
-    const int margin = 8;
-    const int panel_width = std::min(
-        TELEMETRY_PANEL_WIDTH,
-        image.cols - 2 * margin
+    const cv::Rect performance_panel(
+        TELEMETRY_MARGIN,
+        TELEMETRY_MARGIN,
+        PERFORMANCE_PANEL_WIDTH,
+        PERFORMANCE_PANEL_HEIGHT
     );
-    const int panel_height = std::min(
-        TELEMETRY_PANEL_HEIGHT,
-        image.rows - 2 * margin
+    const cv::Rect system_panel(
+        image.cols - TELEMETRY_MARGIN - SYSTEM_PANEL_WIDTH,
+        TELEMETRY_MARGIN,
+        SYSTEM_PANEL_WIDTH,
+        SYSTEM_PANEL_HEIGHT
     );
 
-    if (panel_width <= 0 || panel_height <= 0) {
+    if (performance_panel.x < 0
+        || performance_panel.y < 0
+        || performance_panel.width <= 0
+        || performance_panel.height <= 0
+        || system_panel.x < 0
+        || system_panel.y < 0
+        || system_panel.width <= 0
+        || system_panel.height <= 0
+        || performance_panel.x + performance_panel.width > image.cols
+        || performance_panel.y + performance_panel.height > image.rows
+        || system_panel.x + system_panel.width > image.cols
+        || system_panel.y + system_panel.height > image.rows) {
         return;
     }
 
-    const cv::Rect panel_rect(
-        margin,
-        margin,
-        panel_width,
-        panel_height
-    );
-    static const cv::Mat dark_panel(
-        TELEMETRY_PANEL_HEIGHT,
-        TELEMETRY_PANEL_WIDTH,
+    static const cv::Mat performance_background(
+        PERFORMANCE_PANEL_HEIGHT,
+        PERFORMANCE_PANEL_WIDTH,
         CV_8UC3,
-        cv::Scalar(0, 0, 0)
+        cv::Scalar(28, 28, 28)
     );
-    cv::Mat frame_roi = image(panel_rect);
-    const cv::Mat dark_roi = dark_panel(
-        cv::Rect(0, 0, panel_width, panel_height)
+    static const cv::Mat system_background(
+        SYSTEM_PANEL_HEIGHT,
+        SYSTEM_PANEL_WIDTH,
+        CV_8UC3,
+        cv::Scalar(28, 28, 28)
     );
 
+    cv::Mat performance_roi = image(performance_panel);
     cv::addWeighted(
-        frame_roi,
-        0.35,
-        dark_roi,
-        0.65,
+        performance_roi,
+        0.32,
+        performance_background,
+        0.68,
         0.0,
-        frame_roi
+        performance_roi
     );
 
-    const int x = margin + 10;
-    int y = margin + 19;
+    cv::Mat system_roi = image(system_panel);
+    cv::addWeighted(
+        system_roi,
+        0.32,
+        system_background,
+        0.68,
+        0.0,
+        system_roi
+    );
+
     const int font = cv::FONT_HERSHEY_SIMPLEX;
     char text[128];
 
-    const auto draw_heading = [&](const char* value) {
+    int performance_y = performance_panel.y + 13;
+
+    const auto draw_performance_heading = [&](const char* value) {
         cv::putText(
             image,
             value,
-            cv::Point(x, y),
+            cv::Point(
+                performance_panel.x + 7,
+                performance_y
+            ),
             font,
-            0.47,
+            0.36,
             cv::Scalar(0, 255, 255),
             1,
             cv::LINE_AA
         );
-        y += 19;
+        performance_y += 15;
     };
 
-    const auto draw_line = [&](const char* value) {
+    const auto draw_performance_line = [&](const char* value) {
         cv::putText(
             image,
             value,
-            cv::Point(x, y),
+            cv::Point(
+                performance_panel.x + 7,
+                performance_y
+            ),
             font,
-            0.42,
+            0.30,
             cv::Scalar(245, 245, 245),
             1,
             cv::LINE_AA
         );
-        y += 17;
+        performance_y += 13;
     };
 
-    draw_heading("Performance");
+    int system_y = system_panel.y + 13;
+
+    const auto draw_system_heading = [&](const char* value) {
+        cv::putText(
+            image,
+            value,
+            cv::Point(
+                system_panel.x + 7,
+                system_y
+            ),
+            font,
+            0.36,
+            cv::Scalar(0, 255, 255),
+            1,
+            cv::LINE_AA
+        );
+        system_y += 15;
+    };
+
+    const auto draw_system_line = [&](const char* value) {
+        cv::putText(
+            image,
+            value,
+            cv::Point(
+                system_panel.x + 7,
+                system_y
+            ),
+            font,
+            0.30,
+            cv::Scalar(245, 245, 245),
+            1,
+            cv::LINE_AA
+        );
+        system_y += 13;
+    };
+
+    draw_performance_heading("Performance");
 
     if (performance.available) {
         std::snprintf(
@@ -1015,37 +1081,36 @@ void draw_telemetry(
             "Stream FPS: %.1f",
             performance.stream_fps
         );
-        draw_line(text);
+        draw_performance_line(text);
         std::snprintf(
             text,
             sizeof(text),
             "Pipeline FPS: %.1f",
             performance.pipeline_fps
         );
-        draw_line(text);
+        draw_performance_line(text);
         std::snprintf(
             text,
             sizeof(text),
             "DPU latency: %.1f ms",
             performance.dpu_latency_ms
         );
-        draw_line(text);
+        draw_performance_line(text);
         std::snprintf(
             text,
             sizeof(text),
             "DPU rate: %.1f FPS",
             performance.dpu_fps
         );
-        draw_line(text);
+        draw_performance_line(text);
     } else {
-        draw_line("Stream FPS: N/A");
-        draw_line("Pipeline FPS: N/A");
-        draw_line("DPU latency: N/A");
-        draw_line("DPU rate: N/A");
+        draw_performance_line("Stream FPS: N/A");
+        draw_performance_line("Pipeline FPS: N/A");
+        draw_performance_line("DPU latency: N/A");
+        draw_performance_line("DPU rate: N/A");
     }
 
-    y += 7;
-    draw_heading("System Info");
+    draw_system_heading("System Info");
 
     if (system.cpu_available) {
         std::snprintf(
@@ -1054,9 +1119,9 @@ void draw_telemetry(
             "CPU: %.1f%%",
             system.cpu_percent
         );
-        draw_line(text);
+        draw_system_line(text);
     } else {
-        draw_line("CPU: N/A");
+        draw_system_line("CPU: N/A");
     }
 
     if (system.ram_available) {
@@ -1068,9 +1133,9 @@ void draw_telemetry(
             static_cast<unsigned long long>(system.ram_total_mb),
             system.ram_percent
         );
-        draw_line(text);
+        draw_system_line(text);
     } else {
-        draw_line("RAM: N/A");
+        draw_system_line("RAM: N/A");
     }
 
     if (system.temperature_available) {
@@ -1080,9 +1145,9 @@ void draw_telemetry(
             "Temp: %.1f C",
             system.temperature_c
         );
-        draw_line(text);
+        draw_system_line(text);
     } else {
-        draw_line("Temp: N/A");
+        draw_system_line("Temp: N/A");
     }
 
     if (system.pl_temperature_available) {
@@ -1092,9 +1157,9 @@ void draw_telemetry(
             "PL Temp: %.1f C",
             system.pl_temperature_c
         );
-        draw_line(text);
+        draw_system_line(text);
     } else {
-        draw_line("PL Temp: N/A");
+        draw_system_line("PL Temp: N/A");
     }
 
     if (system.power_available) {
@@ -1104,9 +1169,9 @@ void draw_telemetry(
             "Power: %.2f W",
             system.power_w
         );
-        draw_line(text);
+        draw_system_line(text);
     } else {
-        draw_line("Power: N/A");
+        draw_system_line("Power: N/A");
     }
 
     if (system.voltage_available) {
@@ -1116,9 +1181,9 @@ void draw_telemetry(
             "Voltage: %.2f V",
             system.voltage_v
         );
-        draw_line(text);
+        draw_system_line(text);
     } else {
-        draw_line("Voltage: N/A");
+        draw_system_line("Voltage: N/A");
     }
 
     if (system.current_available) {
@@ -1128,9 +1193,9 @@ void draw_telemetry(
             "Current: %.2f A",
             system.current_a
         );
-        draw_line(text);
+        draw_system_line(text);
     } else {
-        draw_line("Current: N/A");
+        draw_system_line("Current: N/A");
     }
 }
 
