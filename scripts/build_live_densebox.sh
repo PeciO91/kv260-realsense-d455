@@ -15,6 +15,7 @@ g++ \
     $(pkg-config --cflags --libs opencv4) \
     -lrealsense2 \
     -lvitis_ai_library-facedetect \
+    -lvitis_ai_library-dpu_task \
     -lglog \
     -pthread \
     -o inference/live_densebox_realsense
