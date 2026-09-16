@@ -94,3 +94,26 @@ See:
 - Person and Human Face detection
 - Detection overlays
 - Distance estimation from depth data
+
+## RGB + depth test
+
+The D455 can capture RGB and depth simultaneously.
+
+Run:
+
+    python3 camera/depth_test.py
+
+The test starts:
+
+- RGB: 640x480 @ 30 FPS
+- Depth: 640x480 @ 30 FPS
+
+It captures 30 frames and prints the depth value at the center of the
+depth image in metres.
+
+Example:
+
+    Frame 12: RGB 640x480, Depth 640x480, center distance = 1.842 m
+
+This test does not yet align the depth image to the RGB camera.
+RGB-to-depth alignment will be added separately before YOLO integration.
