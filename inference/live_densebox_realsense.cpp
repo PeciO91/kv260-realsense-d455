@@ -4,14 +4,17 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <dirent.h>
 #include <fstream>
+#include <getopt.h>
 #include <iomanip>
 #include <iostream>
 #include <memory>
 #include <netinet/in.h>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -22,29 +25,52 @@
 #include <vitis/ai/facedetect.hpp>
 
 
-constexpr int WIDTH = 640;
-constexpr int HEIGHT = 480;
-constexpr int CAMERA_FPS = 30;
-constexpr int PORT = 8081;
-
+constexpr int DEFAULT_PORT = 8081;
+constexpr int DEFAULT_JPEG_QUALITY = 90;
+constexpr int DEFAULT_COLOR_WIDTH = 848;
+constexpr int DEFAULT_COLOR_HEIGHT = 480;
+constexpr int DEFAULT_COLOR_FPS = 30;
 constexpr float DEPTH_ROI_SCALE = 0.35f;
-constexpr int JPEG_QUALITY = 75;
 constexpr double TELEMETRY_INTERVAL_SECONDS = 1.0;
 constexpr int TELEMETRY_PANEL_WIDTH = 300;
 constexpr int TELEMETRY_PANEL_HEIGHT = 260;
 
 using Clock = std::chrono::steady_clock;
 
+struct Options {
+    int port = DEFAULT_PORT;
+    int jpeg_quality = DEFAULT_JPEG_QUALITY;
+    int depth_width = 0;
+    int depth_height = 0;
+    bool list_profiles = false;
+};
+
+struct CameraStreamConfiguration {
+    int width = 0;
+    int height = 0;
+    int fps = 0;
+    rs2_format native_format = RS2_FORMAT_ANY;
+};
+
+struct CameraConfiguration {
+    CameraStreamConfiguration color;
+    CameraStreamConfiguration depth;
+};
+
 struct PerformanceStats {
     bool available = false;
     double stream_fps = 0.0;
     double pipeline_fps = 0.0;
-    double dpu_latency_ms = 0.0;
-    double dpu_fps = 0.0;
+    double acquire_ms = 0.0;
     double align_ms = 0.0;
     double preprocess_ms = 0.0;
-    double postprocess_ms = 0.0;
+    double dpu_latency_ms = 0.0;
+    double dpu_fps = 0.0;
+    double depth_ms = 0.0;
+    double overlay_ms = 0.0;
     double jpeg_ms = 0.0;
+    double send_ms = 0.0;
+    double total_ms = 0.0;
 };
 
 struct SystemStats {
@@ -65,6 +91,348 @@ struct SystemStats {
     bool current_available = false;
     double current_a = 0.0;
 };
+
+void print_usage(const char* program)
+{
+    std::cout
+        << "Usage: "
+        << program
+        << " [--jpeg-quality N] [--port N]"
+        << " [--depth-width N --depth-height N] [--list-profiles]"
+        << std::endl;
+}
+
+int parse_integer(
+    const char* option_name,
+    const char* value,
+    int minimum,
+    int maximum)
+{
+    try {
+        std::size_t consumed = 0;
+        const long parsed = std::stol(value, &consumed);
+
+        if (consumed != std::strlen(value)
+            || parsed < minimum
+            || parsed > maximum) {
+            throw std::invalid_argument("range");
+        }
+
+        return static_cast<int>(parsed);
+    } catch (const std::exception&) {
+        throw std::invalid_argument(
+            std::string("Invalid value for ")
+            + option_name
+            + ": "
+            + value
+        );
+    }
+}
+
+Options parse_options(int argc, char* argv[])
+{
+    Options options;
+    constexpr int HELP_OPTION = 1000;
+    constexpr int DEPTH_WIDTH_OPTION = 1001;
+    constexpr int DEPTH_HEIGHT_OPTION = 1002;
+    const option long_options[] = {
+        {"jpeg-quality", required_argument, nullptr, 'q'},
+        {"port", required_argument, nullptr, 'p'},
+        {"depth-width", required_argument, nullptr, DEPTH_WIDTH_OPTION},
+        {"depth-height", required_argument, nullptr, DEPTH_HEIGHT_OPTION},
+        {"list-profiles", no_argument, nullptr, 'l'},
+        {"help", no_argument, nullptr, HELP_OPTION},
+        {nullptr, 0, nullptr, 0}
+    };
+
+    while (true) {
+        const int selected = getopt_long(
+            argc,
+            argv,
+            "q:p:l",
+            long_options,
+            nullptr
+        );
+
+        if (selected == -1) {
+            break;
+        }
+
+        switch (selected) {
+        case 'q':
+            options.jpeg_quality = parse_integer(
+                "--jpeg-quality",
+                optarg,
+                1,
+                100
+            );
+            break;
+        case 'p':
+            options.port = parse_integer(
+                "--port",
+                optarg,
+                1,
+                65535
+            );
+            break;
+        case DEPTH_WIDTH_OPTION:
+            options.depth_width = parse_integer(
+                "--depth-width",
+                optarg,
+                1,
+                4096
+            );
+            break;
+        case DEPTH_HEIGHT_OPTION:
+            options.depth_height = parse_integer(
+                "--depth-height",
+                optarg,
+                1,
+                4096
+            );
+            break;
+        case 'l':
+            options.list_profiles = true;
+            break;
+        case HELP_OPTION:
+            print_usage(argv[0]);
+            std::exit(0);
+        default:
+            print_usage(argv[0]);
+            throw std::invalid_argument("Invalid command-line arguments");
+        }
+    }
+
+    if (optind != argc) {
+        print_usage(argv[0]);
+        throw std::invalid_argument(
+            std::string("Unexpected argument: ") + argv[optind]
+        );
+    }
+
+    if ((options.depth_width == 0) != (options.depth_height == 0)) {
+        throw std::invalid_argument(
+            "--depth-width and --depth-height must be used together"
+        );
+    }
+
+    return options;
+}
+
+bool is_native_color_format(rs2_format format);
+
+void print_supported_profiles()
+{
+    rs2::context context;
+    const rs2::device_list devices = context.query_devices();
+
+    if (devices.size() == 0) {
+        throw std::runtime_error("No RealSense device found");
+    }
+
+    for (const rs2::device& device : devices) {
+        std::cout
+            << "Device: "
+            << device.get_info(RS2_CAMERA_INFO_NAME)
+            << std::endl;
+
+        for (const rs2::sensor& sensor : device.query_sensors()) {
+            for (const rs2::stream_profile& profile
+                 : sensor.get_stream_profiles()) {
+                const rs2_stream stream = profile.stream_type();
+
+                if (stream != RS2_STREAM_COLOR
+                    && stream != RS2_STREAM_DEPTH) {
+                    continue;
+                }
+
+                if ((stream == RS2_STREAM_COLOR
+                     && !is_native_color_format(profile.format()))
+                    || (stream == RS2_STREAM_DEPTH
+                        && profile.format() != RS2_FORMAT_Z16)) {
+                    continue;
+                }
+
+                const auto video =
+                    profile.as<rs2::video_stream_profile>();
+
+                if (!video) {
+                    continue;
+                }
+
+                std::cout
+                    << (stream == RS2_STREAM_COLOR
+                        ? "Color "
+                        : "Depth ")
+                    << video.width()
+                    << "x"
+                    << video.height()
+                    << " @ "
+                    << profile.fps()
+                    << " FPS "
+                    << rs2_format_to_string(profile.format())
+                    << std::endl;
+            }
+        }
+    }
+}
+
+bool is_native_color_format(rs2_format format)
+{
+    return format == RS2_FORMAT_YUYV
+        || format == RS2_FORMAT_UYVY;
+}
+
+bool is_lower_resolution_profile(
+    const CameraStreamConfiguration& candidate,
+    const CameraStreamConfiguration& current)
+{
+    const int64_t candidate_pixels =
+        static_cast<int64_t>(candidate.width) * candidate.height;
+    const int64_t current_pixels =
+        static_cast<int64_t>(current.width) * current.height;
+
+    if (candidate_pixels != current_pixels) {
+        return candidate_pixels < current_pixels;
+    }
+
+    if (candidate.width != current.width) {
+        return candidate.width < current.width;
+    }
+
+    return candidate.height < current.height;
+}
+
+CameraConfiguration select_camera_configuration(const Options& options)
+{
+    rs2::context context;
+    const rs2::device_list devices = context.query_devices();
+
+    if (devices.size() == 0) {
+        throw std::runtime_error("No RealSense device found");
+    }
+
+    const rs2::device device = devices[0];
+    CameraConfiguration selected;
+    bool color_found = false;
+
+    for (const rs2::sensor& sensor : device.query_sensors()) {
+        for (const rs2::stream_profile& profile
+             : sensor.get_stream_profiles()) {
+            if (profile.stream_type() != RS2_STREAM_COLOR
+                || !is_native_color_format(profile.format())) {
+                continue;
+            }
+
+            const auto video =
+                profile.as<rs2::video_stream_profile>();
+
+            if (!video) {
+                continue;
+            }
+
+            const CameraStreamConfiguration candidate = {
+                video.width(),
+                video.height(),
+                profile.fps(),
+                profile.format()
+            };
+
+            if (candidate.width != DEFAULT_COLOR_WIDTH
+                || candidate.height != DEFAULT_COLOR_HEIGHT
+                || candidate.fps != DEFAULT_COLOR_FPS) {
+                continue;
+            }
+
+            selected.color = candidate;
+            color_found = true;
+        }
+    }
+
+    if (!color_found) {
+        throw std::runtime_error(
+            "Requested native RealSense color profile is unavailable"
+        );
+    }
+
+    bool depth_found = false;
+
+    for (const rs2::sensor& sensor : device.query_sensors()) {
+        for (const rs2::stream_profile& profile
+             : sensor.get_stream_profiles()) {
+            if (profile.stream_type() != RS2_STREAM_DEPTH
+                || profile.format() != RS2_FORMAT_Z16
+                || profile.fps() != selected.color.fps) {
+                continue;
+            }
+
+            const auto video =
+                profile.as<rs2::video_stream_profile>();
+
+            if (!video) {
+                continue;
+            }
+
+            if (options.depth_width != 0
+                && (video.width() != options.depth_width
+                    || video.height() != options.depth_height)) {
+                continue;
+            }
+
+            const CameraStreamConfiguration candidate = {
+                video.width(),
+                video.height(),
+                profile.fps(),
+                profile.format()
+            };
+
+            if (!depth_found
+                || (options.depth_width == 0
+                    && is_lower_resolution_profile(
+                        candidate,
+                        selected.depth
+                    ))) {
+                selected.depth = candidate;
+                depth_found = true;
+            }
+        }
+    }
+
+    if (!depth_found) {
+        throw std::runtime_error(
+            "No Z16 depth profile matches the selected color FPS"
+        );
+    }
+
+    return selected;
+}
+
+void print_camera_configuration(
+    const CameraConfiguration& configuration)
+{
+    std::cout
+        << "Selected D455 configuration:"
+        << std::endl
+        << "RGB:   "
+        << configuration.color.width
+        << "x"
+        << configuration.color.height
+        << " @ "
+        << configuration.color.fps
+        << " FPS (native "
+        << rs2_format_to_string(configuration.color.native_format)
+        << ", OpenCV BGR8)"
+        << std::endl
+        << "Depth: "
+        << configuration.depth.width
+        << "x"
+        << configuration.depth.height
+        << " @ "
+        << configuration.depth.fps
+        << " FPS "
+        << rs2_format_to_string(configuration.depth.native_format)
+        << std::endl;
+}
 
 bool read_text_file(
     const std::string& path,
@@ -91,13 +459,20 @@ class PerformanceMonitor {
 public:
     PerformanceMonitor()
         : window_start_(Clock::now()),
+          frame_start_(window_start_),
           stage_start_(window_start_)
     {
     }
 
-    void begin_pipeline()
+    void begin_frame()
     {
-        stage_start_ = Clock::now();
+        frame_start_ = Clock::now();
+        stage_start_ = frame_start_;
+    }
+
+    void mark_acquired()
+    {
+        add_stage(acquire_seconds_, acquire_samples_);
     }
 
     void mark_aligned()
@@ -110,18 +485,24 @@ public:
         add_stage(preprocess_seconds_, preprocess_samples_);
     }
 
-    void mark_dpu_complete()
+    void mark_dpu_complete(
+        Clock::time_point start,
+        Clock::time_point end)
     {
-        add_stage(dpu_seconds_, dpu_samples_);
+        dpu_seconds_ +=
+            std::chrono::duration<double>(end - start).count();
+        dpu_samples_++;
+        stage_start_ = end;
     }
 
-    void mark_postprocessed()
+    void mark_depth_complete()
     {
-        add_stage(postprocess_seconds_, postprocess_samples_);
+        add_stage(depth_seconds_, depth_samples_);
     }
 
-    void finish_pipeline()
+    void mark_overlay_complete()
     {
+        add_stage(overlay_seconds_, overlay_samples_);
         pipeline_frames_++;
     }
 
@@ -135,11 +516,26 @@ public:
         add_stage(jpeg_seconds_, jpeg_samples_);
     }
 
-    bool mark_stream_frame()
+    void begin_send()
     {
+        stage_start_ = Clock::now();
+    }
+
+    bool mark_frame_sent()
+    {
+        const auto now = Clock::now();
+        send_seconds_ +=
+            std::chrono::duration<double>(
+                now - stage_start_
+            ).count();
+        send_samples_++;
+        total_seconds_ +=
+            std::chrono::duration<double>(
+                now - frame_start_
+            ).count();
+        total_samples_++;
         stream_frames_++;
 
-        const auto now = Clock::now();
         const double elapsed =
             std::chrono::duration<double>(
                 now - window_start_
@@ -152,6 +548,10 @@ public:
         stats_.available = true;
         stats_.stream_fps = stream_frames_ / elapsed;
         stats_.pipeline_fps = pipeline_frames_ / elapsed;
+        stats_.acquire_ms = average_ms(
+            acquire_seconds_,
+            acquire_samples_
+        );
         stats_.align_ms = average_ms(
             align_seconds_,
             align_samples_
@@ -167,13 +567,25 @@ public:
         stats_.dpu_fps = stats_.dpu_latency_ms > 0.0
             ? 1000.0 / stats_.dpu_latency_ms
             : 0.0;
-        stats_.postprocess_ms = average_ms(
-            postprocess_seconds_,
-            postprocess_samples_
+        stats_.depth_ms = average_ms(
+            depth_seconds_,
+            depth_samples_
+        );
+        stats_.overlay_ms = average_ms(
+            overlay_seconds_,
+            overlay_samples_
         );
         stats_.jpeg_ms = average_ms(
             jpeg_seconds_,
             jpeg_samples_
+        );
+        stats_.send_ms = average_ms(
+            send_seconds_,
+            send_samples_
+        );
+        stats_.total_ms = average_ms(
+            total_seconds_,
+            total_samples_
         );
 
         reset_window(now);
@@ -213,33 +625,50 @@ private:
         window_start_ = now;
         stream_frames_ = 0;
         pipeline_frames_ = 0;
+        acquire_samples_ = 0;
         align_samples_ = 0;
         preprocess_samples_ = 0;
         dpu_samples_ = 0;
-        postprocess_samples_ = 0;
+        depth_samples_ = 0;
+        overlay_samples_ = 0;
         jpeg_samples_ = 0;
+        send_samples_ = 0;
+        total_samples_ = 0;
+        acquire_seconds_ = 0.0;
         align_seconds_ = 0.0;
         preprocess_seconds_ = 0.0;
         dpu_seconds_ = 0.0;
-        postprocess_seconds_ = 0.0;
+        depth_seconds_ = 0.0;
+        overlay_seconds_ = 0.0;
         jpeg_seconds_ = 0.0;
+        send_seconds_ = 0.0;
+        total_seconds_ = 0.0;
     }
 
     Clock::time_point window_start_;
+    Clock::time_point frame_start_;
     Clock::time_point stage_start_;
     PerformanceStats stats_;
     uint64_t stream_frames_ = 0;
     uint64_t pipeline_frames_ = 0;
+    uint64_t acquire_samples_ = 0;
     uint64_t align_samples_ = 0;
     uint64_t preprocess_samples_ = 0;
     uint64_t dpu_samples_ = 0;
-    uint64_t postprocess_samples_ = 0;
+    uint64_t depth_samples_ = 0;
+    uint64_t overlay_samples_ = 0;
     uint64_t jpeg_samples_ = 0;
+    uint64_t send_samples_ = 0;
+    uint64_t total_samples_ = 0;
+    double acquire_seconds_ = 0.0;
     double align_seconds_ = 0.0;
     double preprocess_seconds_ = 0.0;
     double dpu_seconds_ = 0.0;
-    double postprocess_seconds_ = 0.0;
+    double depth_seconds_ = 0.0;
+    double overlay_seconds_ = 0.0;
     double jpeg_seconds_ = 0.0;
+    double send_seconds_ = 0.0;
+    double total_seconds_ = 0.0;
 };
 
 class SystemMonitor {
@@ -717,18 +1146,26 @@ void log_telemetry(
         << performance.stream_fps
         << " FPS pipeline="
         << performance.pipeline_fps
-        << " FPS dpu="
+        << " FPS acquire="
+        << performance.acquire_ms
+        << " ms align="
+        << performance.align_ms
+        << " ms resize="
+        << performance.preprocess_ms
+        << " ms dpu="
         << performance.dpu_latency_ms
         << " ms dpu_rate="
         << performance.dpu_fps
-        << " FPS align="
-        << performance.align_ms
-        << " ms preprocess="
-        << performance.preprocess_ms
-        << " ms postprocess="
-        << performance.postprocess_ms
+        << " FPS depth="
+        << performance.depth_ms
+        << " ms overlay="
+        << performance.overlay_ms
         << " ms jpeg="
         << performance.jpeg_ms
+        << " ms send="
+        << performance.send_ms
+        << " ms total="
+        << performance.total_ms
         << " ms | CPU=";
 
     if (system.cpu_available) {
@@ -795,6 +1232,19 @@ void log_telemetry(
 }
 
 
+struct FaceAnnotation {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    int depth_x1 = 0;
+    int depth_y1 = 0;
+    int depth_x2 = 0;
+    int depth_y2 = 0;
+    float score = 0.0f;
+    float distance = 0.0f;
+};
+
 float median_depth_in_roi(
     const rs2::depth_frame& depth,
     float depth_scale,
@@ -846,7 +1296,7 @@ float median_depth_in_roi(
 }
 
 
-int create_server()
+int create_server(int port)
 {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -867,7 +1317,7 @@ int create_server()
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(PORT);
+    address.sin_port = htons(port);
 
     if (bind(
             server_fd,
@@ -877,7 +1327,7 @@ int create_server()
         throw std::runtime_error("bind() failed");
     }
 
-    if (listen(server_fd, 1) < 0) {
+    if (listen(server_fd, 4) < 0) {
         close(server_fd);
         throw std::runtime_error("listen() failed");
     }
@@ -913,10 +1363,116 @@ bool send_all(
     return true;
 }
 
+bool send_html_page(int client_fd)
+{
+    static const std::string page =
+        "<!doctype html>"
+        "<html><head>"
+        "<meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" "
+        "content=\"width=device-width,initial-scale=1\">"
+        "<title>KV260 DenseBox Stream</title>"
+        "<style>"
+        "html,body{width:100%;height:100%;margin:0;background:#000;"
+        "overflow:hidden;}"
+        "body{display:flex;align-items:center;justify-content:center;}"
+        "img{width:100vw;height:100vh;object-fit:contain;display:block;}"
+        "</style></head>"
+        "<body><img src=\"/stream.mjpg\" "
+        "alt=\"KV260 DenseBox camera stream\"></body></html>";
 
-int main()
+    const std::string header =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Content-Length: "
+        + std::to_string(page.size())
+        + "\r\n"
+        "Cache-Control: no-store\r\n"
+        "Connection: close\r\n\r\n";
+
+    return send_all(
+        client_fd,
+        header.data(),
+        header.size()
+    ) && send_all(
+        client_fd,
+        page.data(),
+        page.size()
+    );
+}
+
+int wait_for_stream_client(int server_fd)
+{
+    while (true) {
+        sockaddr_in client_address{};
+        socklen_t client_len = sizeof(client_address);
+        const int client_fd = accept(
+            server_fd,
+            reinterpret_cast<sockaddr*>(&client_address),
+            &client_len
+        );
+
+        if (client_fd < 0) {
+            throw std::runtime_error("accept() failed");
+        }
+
+        char request_buffer[2048];
+        const ssize_t request_size = recv(
+            client_fd,
+            request_buffer,
+            sizeof(request_buffer),
+            0
+        );
+
+        if (request_size <= 0) {
+            close(client_fd);
+            continue;
+        }
+
+        const std::string request(
+            request_buffer,
+            static_cast<std::size_t>(request_size)
+        );
+
+        if (request.compare(0, 17, "GET /stream.mjpg ") == 0) {
+            return client_fd;
+        }
+
+        if (request.compare(0, 6, "GET / ") == 0
+            || request.compare(0, 16, "GET /index.html ") == 0) {
+            send_html_page(client_fd);
+            close(client_fd);
+            continue;
+        }
+
+        static const std::string not_found =
+            "HTTP/1.1 404 Not Found\r\n"
+            "Content-Length: 0\r\n"
+            "Connection: close\r\n\r\n";
+        send_all(
+            client_fd,
+            not_found.data(),
+            not_found.size()
+        );
+        close(client_fd);
+    }
+}
+
+
+int main(int argc, char* argv[])
 {
     try {
+        const Options options = parse_options(argc, argv);
+
+        if (options.list_profiles) {
+            print_supported_profiles();
+            return 0;
+        }
+
+        const CameraConfiguration camera_configuration =
+            select_camera_configuration(options);
+        print_camera_configuration(camera_configuration);
+
         std::cout
             << "Creating DenseBox detector..."
             << std::endl;
@@ -955,18 +1511,18 @@ int main()
 
         config.enable_stream(
             RS2_STREAM_COLOR,
-            WIDTH,
-            HEIGHT,
+            camera_configuration.color.width,
+            camera_configuration.color.height,
             RS2_FORMAT_BGR8,
-            CAMERA_FPS
+            camera_configuration.color.fps
         );
 
         config.enable_stream(
             RS2_STREAM_DEPTH,
-            WIDTH,
-            HEIGHT,
+            camera_configuration.depth.width,
+            camera_configuration.depth.height,
             RS2_FORMAT_Z16,
-            CAMERA_FPS
+            camera_configuration.depth.fps
         );
 
         rs2::align align_to_color(
@@ -1000,6 +1556,11 @@ int main()
             << std::endl;
 
         std::cout
+            << "JPEG quality: "
+            << options.jpeg_quality
+            << std::endl;
+
+        std::cout
             << "Warming up..."
             << std::endl;
 
@@ -1010,7 +1571,7 @@ int main()
             align_to_color.process(frames);
         }
 
-        int server_fd = create_server();
+        int server_fd = create_server(options.port);
 
         std::cout << std::endl;
         std::cout
@@ -1019,7 +1580,7 @@ int main()
 
         std::cout
             << "http://147.32.163.22:"
-            << PORT
+            << options.port
             << "/"
             << std::endl;
 
@@ -1027,31 +1588,7 @@ int main()
             << "Waiting for browser..."
             << std::endl;
 
-        sockaddr_in client_address{};
-        socklen_t client_len =
-            sizeof(client_address);
-
-        int client_fd = accept(
-            server_fd,
-            reinterpret_cast<sockaddr*>(
-                &client_address
-            ),
-            &client_len
-        );
-
-        if (client_fd < 0) {
-            throw std::runtime_error(
-                "accept() failed"
-            );
-        }
-
-        char request[2048];
-        recv(
-            client_fd,
-            request,
-            sizeof(request),
-            0
-        );
+        int client_fd = wait_for_stream_client(server_fd);
 
         const std::string header =
             "HTTP/1.1 200 OK\r\n"
@@ -1078,12 +1615,26 @@ int main()
         PerformanceMonitor performance_monitor;
         SystemMonitor system_monitor;
         system_monitor.update_if_due();
+        std::vector<uchar> jpeg;
+        jpeg.reserve(
+            camera_configuration.color.width
+            * camera_configuration.color.height
+            / 4
+        );
+        const std::vector<int> jpeg_params = {
+            cv::IMWRITE_JPEG_QUALITY,
+            options.jpeg_quality
+        };
+        std::vector<FaceAnnotation> annotations;
+        annotations.reserve(16);
 
         while (true) {
-            performance_monitor.begin_pipeline();
+            performance_monitor.begin_frame();
 
             auto frames =
                 pipeline.wait_for_frames();
+
+            performance_monitor.mark_acquired();
 
             auto aligned =
                 align_to_color.process(frames);
@@ -1101,7 +1652,10 @@ int main()
             performance_monitor.mark_aligned();
 
             cv::Mat image(
-                cv::Size(WIDTH, HEIGHT),
+                cv::Size(
+                    camera_configuration.color.width,
+                    camera_configuration.color.height
+                ),
                 CV_8UC3,
                 const_cast<void*>(
                     color.get_data()
@@ -1124,50 +1678,59 @@ int main()
 
             performance_monitor.mark_preprocessed();
 
-            auto result =
-                detector->run(model_input);
+            const auto dpu_start = Clock::now();
+            auto result = detector->run(model_input);
+            const auto dpu_end = Clock::now();
 
-            performance_monitor.mark_dpu_complete();
+            performance_monitor.mark_dpu_complete(
+                dpu_start,
+                dpu_end
+            );
 
-            for (const auto& face :
-                 result.rects) {
+            annotations.clear();
+
+            if (annotations.capacity() < result.rects.size()) {
+                annotations.reserve(result.rects.size());
+            }
+
+            for (const auto& face : result.rects) {
 
                 int x = static_cast<int>(
-                    face.x * WIDTH
+                    face.x * image.cols
                 );
 
                 int y = static_cast<int>(
-                    face.y * HEIGHT
+                    face.y * image.rows
                 );
 
                 int w = static_cast<int>(
-                    face.width * WIDTH
+                    face.width * image.cols
                 );
 
                 int h = static_cast<int>(
-                    face.height * HEIGHT
+                    face.height * image.rows
                 );
 
                 x = std::clamp(
                     x,
                     0,
-                    WIDTH - 1
+                    image.cols - 1
                 );
 
                 y = std::clamp(
                     y,
                     0,
-                    HEIGHT - 1
+                    image.rows - 1
                 );
 
                 w = std::min(
                     w,
-                    WIDTH - x
+                    image.cols - x
                 );
 
                 h = std::min(
                     h,
-                    HEIGHT - y
+                    image.rows - y
                 );
 
                 if (w <= 0 || h <= 0) {
@@ -1203,7 +1766,7 @@ int main()
                 int dy2 =
                     cy + roi_h / 2;
 
-                float distance =
+                const float distance =
                     median_depth_in_roi(
                         depth,
                         depth_scale,
@@ -1213,50 +1776,64 @@ int main()
                         dy2
                     );
 
+                annotations.push_back({
+                    x,
+                    y,
+                    w,
+                    h,
+                    dx1,
+                    dy1,
+                    dx2,
+                    dy2,
+                    face.score,
+                    distance
+                });
+            }
+
+            performance_monitor.mark_depth_complete();
+
+            for (const FaceAnnotation& face : annotations) {
                 cv::rectangle(
                     image,
-                    cv::Rect(x, y, w, h),
-                    cv::Scalar(
-                        0,
-                        255,
-                        0
+                    cv::Rect(
+                        face.x,
+                        face.y,
+                        face.width,
+                        face.height
                     ),
+                    cv::Scalar(0, 255, 0),
                     2
                 );
 
                 cv::rectangle(
                     image,
                     cv::Point(
-                        std::max(0, dx1),
-                        std::max(0, dy1)
+                        std::max(0, face.depth_x1),
+                        std::max(0, face.depth_y1)
                     ),
                     cv::Point(
                         std::min(
-                            WIDTH - 1,
-                            dx2
+                            image.cols - 1,
+                            face.depth_x2
                         ),
                         std::min(
-                            HEIGHT - 1,
-                            dy2
+                            image.rows - 1,
+                            face.depth_y2
                         )
                     ),
-                    cv::Scalar(
-                        255,
-                        0,
-                        0
-                    ),
+                    cv::Scalar(255, 0, 0),
                     1
                 );
 
                 char label[128];
 
-                if (distance > 0.0f) {
+                if (face.distance > 0.0f) {
                     std::snprintf(
                         label,
                         sizeof(label),
                         "Face %.2f | %.2f m",
                         face.score,
-                        distance
+                        face.distance
                     );
                 } else {
                     std::snprintf(
@@ -1271,25 +1848,17 @@ int main()
                     image,
                     label,
                     cv::Point(
-                        x,
-                        std::max(
-                            20,
-                            y - 8
-                        )
+                        face.x,
+                        std::max(20, face.y - 8)
                     ),
                     cv::FONT_HERSHEY_SIMPLEX,
                     0.55,
-                    cv::Scalar(
-                        0,
-                        255,
-                        0
-                    ),
+                    cv::Scalar(0, 255, 0),
                     2,
                     cv::LINE_AA
                 );
             }
 
-            performance_monitor.mark_postprocessed();
             system_monitor.update_if_due();
 
             draw_telemetry(
@@ -1298,22 +1867,16 @@ int main()
                 system_monitor.stats()
             );
 
-            performance_monitor.finish_pipeline();
+            performance_monitor.mark_overlay_complete();
 
-            std::vector<uchar> jpeg;
-
-            std::vector<int> params = {
-                cv::IMWRITE_JPEG_QUALITY,
-                JPEG_QUALITY
-            };
-
+            jpeg.clear();
             performance_monitor.begin_jpeg();
 
             const bool encoded = cv::imencode(
                 ".jpg",
                 image,
                 jpeg,
-                params
+                jpeg_params
             );
 
             performance_monitor.mark_jpeg_complete();
@@ -1330,6 +1893,8 @@ int main()
                     jpeg.size()
                 )
                 + "\r\n\r\n";
+
+            performance_monitor.begin_send();
 
             if (!send_all(
                     client_fd,
@@ -1354,7 +1919,7 @@ int main()
                 break;
             }
 
-            if (performance_monitor.mark_stream_frame()) {
+            if (performance_monitor.mark_frame_sent()) {
                 log_telemetry(
                     performance_monitor.stats(),
                     system_monitor.stats()

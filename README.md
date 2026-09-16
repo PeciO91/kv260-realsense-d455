@@ -74,6 +74,39 @@ Alternative:
         --stream-fps 20 \
         --jpeg-quality 80
 
+## DenseBox live stream
+
+Build and run the DPU-backed RGB/depth stream:
+
+    ./scripts/build_live_densebox.sh
+    ./inference/live_densebox_realsense
+
+Open `http://KV260_IP:8081/`. The page removes browser margins and scales the
+MJPEG image to the available viewport with its aspect ratio preserved.
+
+At startup the application enumerates native D455 YUYV color and Z16 depth
+profiles and verifies/selects the configured 848x480 YUYV profile at 30 FPS.
+The smallest Z16 depth profile at the same FPS is selected to reduce alignment
+cost without lowering RGB resolution; this is 424x240 at 30 FPS on the tested
+camera. `rs2::align` maps depth into the color frame before distance lookup.
+The selected RGB and depth profiles are printed at startup.
+
+List the native profiles seen by the application:
+
+    ./inference/live_densebox_realsense --list-profiles
+
+JPEG quality defaults to 90.
+It can be changed without rebuilding:
+
+    ./inference/live_densebox_realsense --jpeg-quality 75
+
+A supported depth mode at the selected RGB FPS can also be requested for
+quality/performance comparisons:
+
+    ./inference/live_densebox_realsense \
+        --depth-width 640 \
+        --depth-height 480
+
 ## DenseBox telemetry
 
 The live DenseBox stream draws a compact telemetry panel over the MJPEG
@@ -92,9 +125,10 @@ video. It updates approximately once per second and shows:
 - Board power, voltage, and current from the INA260 hwmon device when
   available.
 
-Optional alignment, preprocessing, postprocessing, and JPEG timing values are
-reported in the console. Hardware monitoring devices are discovered by their
-hwmon names; unavailable metrics display as `N/A` and do not stop streaming.
+Acquisition, alignment, resize, depth ROI, overlay drawing, JPEG encoding,
+HTTP send, and total-frame timing averages are reported in the console.
+Hardware monitoring devices are discovered by their hwmon names; unavailable
+metrics display as `N/A` and do not stop streaming.
 
 ## RealSense backend
 
