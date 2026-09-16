@@ -2,42 +2,95 @@
 
 Intel RealSense D455 camera pipeline for the AMD/Xilinx Kria KV260.
 
-## Phase 1 - Camera bring-up
+## Current status
 
-- Detect Intel RealSense D455
-- Capture RGB frames
-- Capture depth frames
-- Stream camera output to a PC
+Working:
 
-## Phase 2 - YOLO26 FPGA inference
+- Intel RealSense D455 detection
+- RGB capture at 640x480
+- librealsense / pyrealsense2
+- RSUSB backend on Xilinx 2022.2
+- Stable pipeline start and stop
+- JPEG frame capture
+- Live MJPEG stream over HTTP
 
-- DPU-compatible YOLO26n
-- Person and Human Face detection
-- INT8 quantization with Vitis AI
-- DPU inference on KV260
-- Real-time RealSense D455 input
-- Detection visualization
-
-## Pipeline
+## Camera pipeline
 
 RealSense D455
     |
     | USB
     v
-KV260 ARM/Linux
+librealsense RSUSB
     |
-    | pyrealsense2
     v
-RGB / Depth frame
+pyrealsense2
     |
-    | preprocessing
+    v
+RGB frame
+    |
+    +----> OpenCV / JPEG
+    |
+    +----> HTTP MJPEG stream
+    |
+    v
+Future YOLO26 preprocessing
+    |
     v
 KV260 DPU
     |
-    | YOLO26n INT8
     v
 Person / Human Face detections
 
-## Current status
+## Camera test
 
-Camera bring-up.
+Run:
+
+    python3 camera/camera_test.py
+
+A test frame is saved as:
+
+    d455_test.jpg
+
+## Live preview
+
+Run:
+
+    python3 camera/live_stream.py
+
+Find the KV260 IP address:
+
+    hostname -I
+
+Then open on another computer:
+
+    http://KV260_IP:8080/
+
+The default network preview runs at 15 FPS with JPEG quality 75.
+
+Alternative:
+
+    python3 camera/live_stream.py \
+        --port 8080 \
+        --stream-fps 20 \
+        --jpeg-quality 80
+
+## RealSense backend
+
+The standard V4L2/UVC backend caused a kernel crash during
+pipeline shutdown on the Xilinx 2022.2 kernel.
+
+The project therefore uses the official librealsense RSUSB backend.
+
+See:
+
+    docs/realsense-rsusb.md
+
+## Future work
+
+- Depth stream
+- RGB/depth alignment
+- DPU-compatible YOLO26n
+- INT8 Vitis AI inference
+- Person and Human Face detection
+- Detection overlays
+- Distance estimation from depth data
