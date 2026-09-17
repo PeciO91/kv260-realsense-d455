@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <arpa/inet.h>
 #include <chrono>
 #include <cmath>
@@ -11,6 +12,7 @@
 #include <getopt.h>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <netinet/in.h>
 #include <sstream>
@@ -21,6 +23,7 @@
 #include <vector>
 
 #include <librealsense2/rs.hpp>
+#include <librealsense2/rsutil.h>
 #include <opencv2/opencv.hpp>
 #include <vitis/ai/facedetect.hpp>
 
@@ -31,6 +34,13 @@ constexpr int DEFAULT_COLOR_WIDTH = 848;
 constexpr int DEFAULT_COLOR_HEIGHT = 480;
 constexpr int DEFAULT_COLOR_FPS = 30;
 constexpr float DEPTH_ROI_SCALE = 0.35f;
+constexpr int DEPTH_SAMPLE_GRID_SIZE = 5;
+constexpr float DEPTH_SEARCH_MIN_METERS = 0.1f;
+constexpr float DEPTH_SEARCH_MAX_METERS = 10.0f;
+static_assert(
+    DEPTH_SAMPLE_GRID_SIZE > 0 && DEPTH_SAMPLE_GRID_SIZE % 2 == 1,
+    "Depth sampling grid size must be a positive odd number"
+);
 constexpr double TELEMETRY_INTERVAL_SECONDS = 1.0;
 constexpr int TELEMETRY_MARGIN = 4;
 constexpr int PERFORMANCE_PANEL_WIDTH = 185;
@@ -65,11 +75,10 @@ struct PerformanceStats {
     double stream_fps = 0.0;
     double pipeline_fps = 0.0;
     double acquire_ms = 0.0;
-    double align_ms = 0.0;
     double preprocess_ms = 0.0;
     double dpu_latency_ms = 0.0;
     double dpu_fps = 0.0;
-    double depth_ms = 0.0;
+    double depth_map_ms = 0.0;
     double overlay_ms = 0.0;
     double jpeg_ms = 0.0;
     double send_ms = 0.0;
@@ -478,11 +487,6 @@ public:
         add_stage(acquire_seconds_, acquire_samples_);
     }
 
-    void mark_aligned()
-    {
-        add_stage(align_seconds_, align_samples_);
-    }
-
     void mark_preprocessed()
     {
         add_stage(preprocess_seconds_, preprocess_samples_);
@@ -498,9 +502,9 @@ public:
         stage_start_ = end;
     }
 
-    void mark_depth_complete()
+    void mark_depth_map_complete()
     {
-        add_stage(depth_seconds_, depth_samples_);
+        add_stage(depth_map_seconds_, depth_map_samples_);
     }
 
     void mark_overlay_complete()
@@ -555,10 +559,6 @@ public:
             acquire_seconds_,
             acquire_samples_
         );
-        stats_.align_ms = average_ms(
-            align_seconds_,
-            align_samples_
-        );
         stats_.preprocess_ms = average_ms(
             preprocess_seconds_,
             preprocess_samples_
@@ -570,9 +570,9 @@ public:
         stats_.dpu_fps = stats_.dpu_latency_ms > 0.0
             ? 1000.0 / stats_.dpu_latency_ms
             : 0.0;
-        stats_.depth_ms = average_ms(
-            depth_seconds_,
-            depth_samples_
+        stats_.depth_map_ms = average_ms(
+            depth_map_seconds_,
+            depth_map_samples_
         );
         stats_.overlay_ms = average_ms(
             overlay_seconds_,
@@ -629,19 +629,17 @@ private:
         stream_frames_ = 0;
         pipeline_frames_ = 0;
         acquire_samples_ = 0;
-        align_samples_ = 0;
         preprocess_samples_ = 0;
         dpu_samples_ = 0;
-        depth_samples_ = 0;
+        depth_map_samples_ = 0;
         overlay_samples_ = 0;
         jpeg_samples_ = 0;
         send_samples_ = 0;
         total_samples_ = 0;
         acquire_seconds_ = 0.0;
-        align_seconds_ = 0.0;
         preprocess_seconds_ = 0.0;
         dpu_seconds_ = 0.0;
-        depth_seconds_ = 0.0;
+        depth_map_seconds_ = 0.0;
         overlay_seconds_ = 0.0;
         jpeg_seconds_ = 0.0;
         send_seconds_ = 0.0;
@@ -655,19 +653,17 @@ private:
     uint64_t stream_frames_ = 0;
     uint64_t pipeline_frames_ = 0;
     uint64_t acquire_samples_ = 0;
-    uint64_t align_samples_ = 0;
     uint64_t preprocess_samples_ = 0;
     uint64_t dpu_samples_ = 0;
-    uint64_t depth_samples_ = 0;
+    uint64_t depth_map_samples_ = 0;
     uint64_t overlay_samples_ = 0;
     uint64_t jpeg_samples_ = 0;
     uint64_t send_samples_ = 0;
     uint64_t total_samples_ = 0;
     double acquire_seconds_ = 0.0;
-    double align_seconds_ = 0.0;
     double preprocess_seconds_ = 0.0;
     double dpu_seconds_ = 0.0;
-    double depth_seconds_ = 0.0;
+    double depth_map_seconds_ = 0.0;
     double overlay_seconds_ = 0.0;
     double jpeg_seconds_ = 0.0;
     double send_seconds_ = 0.0;
@@ -1213,16 +1209,14 @@ void log_telemetry(
         << performance.pipeline_fps
         << " FPS acquire="
         << performance.acquire_ms
-        << " ms align="
-        << performance.align_ms
         << " ms resize="
         << performance.preprocess_ms
         << " ms dpu="
         << performance.dpu_latency_ms
         << " ms dpu_rate="
         << performance.dpu_fps
-        << " FPS depth="
-        << performance.depth_ms
+        << " FPS depth_map="
+        << performance.depth_map_ms
         << " ms overlay="
         << performance.overlay_ms
         << " ms jpeg="
@@ -1297,6 +1291,49 @@ void log_telemetry(
 }
 
 
+struct DepthMappingCalibration {
+    rs2_intrinsics color_intrinsics{};
+    rs2_intrinsics depth_intrinsics{};
+    rs2_extrinsics color_to_depth{};
+    rs2_extrinsics depth_to_color{};
+    float depth_scale = 0.0f;
+    float depth_min_m = 0.0f;
+    float depth_max_m = 0.0f;
+};
+
+DepthMappingCalibration create_depth_mapping_calibration(
+    const rs2::pipeline_profile& profile,
+    float depth_scale)
+{
+    const auto color_profile = profile
+        .get_stream(RS2_STREAM_COLOR)
+        .as<rs2::video_stream_profile>();
+    const auto depth_profile = profile
+        .get_stream(RS2_STREAM_DEPTH)
+        .as<rs2::video_stream_profile>();
+
+    if (!color_profile || !depth_profile || depth_scale <= 0.0f) {
+        throw std::runtime_error("Invalid RealSense depth calibration");
+    }
+
+    DepthMappingCalibration calibration;
+    calibration.color_intrinsics = color_profile.get_intrinsics();
+    calibration.depth_intrinsics = depth_profile.get_intrinsics();
+    calibration.color_to_depth = color_profile.get_extrinsics_to(depth_profile);
+    calibration.depth_to_color = depth_profile.get_extrinsics_to(color_profile);
+    calibration.depth_scale = depth_scale;
+    calibration.depth_min_m = std::max(
+        DEPTH_SEARCH_MIN_METERS,
+        depth_scale
+    );
+    calibration.depth_max_m = std::min(
+        DEPTH_SEARCH_MAX_METERS,
+        static_cast<float>(std::numeric_limits<uint16_t>::max())
+            * depth_scale
+    );
+    return calibration;
+}
+
 struct FaceAnnotation {
     int x = 0;
     int y = 0;
@@ -1310,54 +1347,87 @@ struct FaceAnnotation {
     float distance = 0.0f;
 };
 
-float median_depth_in_roi(
+float median_depth_in_color_roi(
     const rs2::depth_frame& depth,
-    float depth_scale,
+    const DepthMappingCalibration& calibration,
     int x1,
     int y1,
     int x2,
     int y2)
 {
-    x1 = std::max(0, x1);
-    y1 = std::max(0, y1);
-    x2 = std::min(depth.get_width() - 1, x2);
-    y2 = std::min(depth.get_height() - 1, y2);
+    x1 = std::clamp(x1, 0, calibration.color_intrinsics.width - 1);
+    y1 = std::clamp(y1, 0, calibration.color_intrinsics.height - 1);
+    x2 = std::clamp(x2, 0, calibration.color_intrinsics.width - 1);
+    y2 = std::clamp(y2, 0, calibration.color_intrinsics.height - 1);
 
-    if (x2 < x1 || y2 < y1) {
+    if (x2 <= x1 || y2 <= y1
+        || depth.get_width() != calibration.depth_intrinsics.width
+        || depth.get_height() != calibration.depth_intrinsics.height) {
         return 0.0f;
     }
 
-    const auto* data =
-        reinterpret_cast<const uint16_t*>(depth.get_data());
+    const auto* data = reinterpret_cast<const uint16_t*>(depth.get_data());
+    std::array<
+        uint16_t,
+        DEPTH_SAMPLE_GRID_SIZE * DEPTH_SAMPLE_GRID_SIZE
+    > values{};
+    std::size_t value_count = 0;
+    const float roi_width = static_cast<float>(x2 - x1);
+    const float roi_height = static_cast<float>(y2 - y1);
 
-    const int width = depth.get_width();
+    for (int row = 0; row < DEPTH_SAMPLE_GRID_SIZE; ++row) {
+        for (int column = 0; column < DEPTH_SAMPLE_GRID_SIZE; ++column) {
+            const float color_pixel[2] = {
+                x1 + (column + 0.5f) * roi_width
+                    / DEPTH_SAMPLE_GRID_SIZE,
+                y1 + (row + 0.5f) * roi_height
+                    / DEPTH_SAMPLE_GRID_SIZE
+            };
+            float depth_pixel[2] = {-1.0f, -1.0f};
 
-    std::vector<uint16_t> values;
-    values.reserve((x2 - x1 + 1) * (y2 - y1 + 1));
+            rs2_project_color_pixel_to_depth_pixel(
+                depth_pixel,
+                data,
+                calibration.depth_scale,
+                calibration.depth_min_m,
+                calibration.depth_max_m,
+                &calibration.depth_intrinsics,
+                &calibration.color_intrinsics,
+                &calibration.color_to_depth,
+                &calibration.depth_to_color,
+                color_pixel
+            );
 
-    for (int y = y1; y <= y2; ++y) {
-        for (int x = x1; x <= x2; ++x) {
-            uint16_t raw = data[y * width + x];
+            if (!std::isfinite(depth_pixel[0])
+                || !std::isfinite(depth_pixel[1])) {
+                continue;
+            }
+
+            const int depth_x = static_cast<int>(depth_pixel[0]);
+            const int depth_y = static_cast<int>(depth_pixel[1]);
+
+            if (depth_x < 0 || depth_x >= depth.get_width()
+                || depth_y < 0 || depth_y >= depth.get_height()) {
+                continue;
+            }
+
+            const uint16_t raw = data[
+                depth_y * calibration.depth_intrinsics.width + depth_x
+            ];
 
             if (raw != 0) {
-                values.push_back(raw);
+                values[value_count++] = raw;
             }
         }
     }
 
-    if (values.empty()) {
+    if (value_count == 0) {
         return 0.0f;
     }
 
-    auto middle = values.begin() + values.size() / 2;
-
-    std::nth_element(
-        values.begin(),
-        middle,
-        values.end()
-    );
-
-    return static_cast<float>(*middle) * depth_scale;
+    auto middle = values.begin() + value_count / 2;
+    std::nth_element(values.begin(), middle, values.begin() + value_count);
+    return static_cast<float>(*middle) * calibration.depth_scale;
 }
 
 
@@ -1590,10 +1660,6 @@ int main(int argc, char* argv[])
             camera_configuration.depth.fps
         );
 
-        rs2::align align_to_color(
-            RS2_STREAM_COLOR
-        );
-
         std::cout
             << "Starting RealSense D455..."
             << std::endl;
@@ -1606,6 +1672,12 @@ int main(int argc, char* argv[])
 
         float depth_scale =
             depth_sensor.get_depth_scale();
+
+        const DepthMappingCalibration depth_mapping =
+            create_depth_mapping_calibration(
+                profile,
+                depth_scale
+            );
 
         std::cout
             << "Camera: "
@@ -1621,6 +1693,14 @@ int main(int argc, char* argv[])
             << std::endl;
 
         std::cout
+            << "Depth sampling: "
+            << DEPTH_SAMPLE_GRID_SIZE
+            << "x"
+            << DEPTH_SAMPLE_GRID_SIZE
+            << " calibrated grid"
+            << std::endl;
+
+        std::cout
             << "JPEG quality: "
             << options.jpeg_quality
             << std::endl;
@@ -1630,10 +1710,7 @@ int main(int argc, char* argv[])
             << std::endl;
 
         for (int i = 0; i < 10; ++i) {
-            auto frames =
-                pipeline.wait_for_frames();
-
-            align_to_color.process(frames);
+            pipeline.wait_for_frames();
         }
 
         int server_fd = create_server(options.port);
@@ -1701,20 +1778,15 @@ int main(int argc, char* argv[])
 
             performance_monitor.mark_acquired();
 
-            auto aligned =
-                align_to_color.process(frames);
-
             auto color =
-                aligned.get_color_frame();
+                frames.get_color_frame();
 
             auto depth =
-                aligned.get_depth_frame();
+                frames.get_depth_frame();
 
             if (!color || !depth) {
                 continue;
             }
-
-            performance_monitor.mark_aligned();
 
             cv::Mat image(
                 cv::Size(
@@ -1832,9 +1904,9 @@ int main(int argc, char* argv[])
                     cy + roi_h / 2;
 
                 const float distance =
-                    median_depth_in_roi(
+                    median_depth_in_color_roi(
                         depth,
-                        depth_scale,
+                        depth_mapping,
                         dx1,
                         dy1,
                         dx2,
@@ -1855,7 +1927,7 @@ int main(int argc, char* argv[])
                 });
             }
 
-            performance_monitor.mark_depth_complete();
+            performance_monitor.mark_depth_map_complete();
 
             for (const FaceAnnotation& face : annotations) {
                 cv::rectangle(
