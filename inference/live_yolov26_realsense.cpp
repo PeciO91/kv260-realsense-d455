@@ -1,14 +1,17 @@
 #include <algorithm>
 #include <array>
 #include <arpa/inet.h>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <exception>
 #include <fstream>
 #include <getopt.h>
 #include <iomanip>
@@ -16,11 +19,14 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <netinet/in.h>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <sys/socket.h>
+#include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -68,6 +74,15 @@ constexpr std::array<const char*, NUM_CLASSES> CLASS_NAMES = {
 
 using Clock = std::chrono::steady_clock;
 
+double elapsed_ms(
+    Clock::time_point start,
+    Clock::time_point end)
+{
+    return std::chrono::duration<double, std::milli>(
+        end - start
+    ).count();
+}
+
 struct Options {
     int port = DEFAULT_PORT;
     int jpeg_quality = DEFAULT_JPEG_QUALITY;
@@ -103,7 +118,9 @@ struct PerformanceStats {
     double overlay_ms = 0.0;
     double jpeg_ms = 0.0;
     double send_ms = 0.0;
-    double total_ms = 0.0;
+    double e2e_latency_ms = 0.0;
+    uint64_t dropped_frames = 0;
+    double drop_rate_percent = 0.0;
 };
 
 struct SystemStats {
@@ -546,78 +563,53 @@ bool read_number_file(
 class PerformanceMonitor {
 public:
     PerformanceMonitor()
-        : window_start_(Clock::now()),
-          frame_start_(window_start_),
-          stage_start_(window_start_)
+        : window_start_(Clock::now())
     {
     }
 
-    void begin_frame()
+    void record_pipeline(
+        double acquire_ms,
+        double preprocess_ms,
+        double dpu_ms,
+        double depth_map_ms)
     {
-        frame_start_ = Clock::now();
-        stage_start_ = frame_start_;
-    }
-
-    void mark_acquired()
-    {
-        add_stage(acquire_seconds_, acquire_samples_);
-    }
-
-    void mark_preprocessed()
-    {
-        add_stage(preprocess_seconds_, preprocess_samples_);
-    }
-
-    void mark_dpu_complete(
-        Clock::time_point start,
-        Clock::time_point end)
-    {
-        dpu_seconds_ +=
-            std::chrono::duration<double>(end - start).count();
-        dpu_samples_++;
-        stage_start_ = end;
-    }
-
-    void mark_depth_map_complete()
-    {
-        add_stage(depth_map_seconds_, depth_map_samples_);
-    }
-
-    void mark_overlay_complete()
-    {
-        add_stage(overlay_seconds_, overlay_samples_);
+        std::lock_guard<std::mutex> lock(mutex_);
         pipeline_frames_++;
+        acquire_seconds_ += acquire_ms / 1000.0;
+        acquire_samples_++;
+        preprocess_seconds_ += preprocess_ms / 1000.0;
+        preprocess_samples_++;
+        dpu_seconds_ += dpu_ms / 1000.0;
+        dpu_samples_++;
+        depth_map_seconds_ += depth_map_ms / 1000.0;
+        depth_map_samples_++;
     }
 
-    void begin_jpeg()
+    void record_drop()
     {
-        stage_start_ = Clock::now();
+        std::lock_guard<std::mutex> lock(mutex_);
+        dropped_frames_++;
+        window_drops_++;
     }
 
-    void mark_jpeg_complete()
+    bool record_stream(
+        double overlay_ms,
+        double jpeg_ms,
+        double send_ms,
+        double e2e_latency_ms,
+        PerformanceStats& snapshot)
     {
-        add_stage(jpeg_seconds_, jpeg_samples_);
-    }
-
-    void begin_send()
-    {
-        stage_start_ = Clock::now();
-    }
-
-    bool mark_frame_sent()
-    {
+        std::lock_guard<std::mutex> lock(mutex_);
         const auto now = Clock::now();
-        send_seconds_ +=
-            std::chrono::duration<double>(
-                now - stage_start_
-            ).count();
-        send_samples_++;
-        total_seconds_ +=
-            std::chrono::duration<double>(
-                now - frame_start_
-            ).count();
-        total_samples_++;
         stream_frames_++;
+        overlay_seconds_ += overlay_ms / 1000.0;
+        overlay_samples_++;
+        jpeg_seconds_ += jpeg_ms / 1000.0;
+        jpeg_samples_++;
+        send_seconds_ += send_ms / 1000.0;
+        send_samples_++;
+        e2e_seconds_ += e2e_latency_ms / 1000.0;
+        e2e_samples_++;
 
         const double elapsed =
             std::chrono::duration<double>(
@@ -662,34 +654,27 @@ public:
             send_seconds_,
             send_samples_
         );
-        stats_.total_ms = average_ms(
-            total_seconds_,
-            total_samples_
+        stats_.e2e_latency_ms = average_ms(
+            e2e_seconds_,
+            e2e_samples_
         );
+        stats_.dropped_frames = dropped_frames_;
+        stats_.drop_rate_percent = pipeline_frames_ > 0
+            ? 100.0 * window_drops_ / pipeline_frames_
+            : 0.0;
 
+        snapshot = stats_;
         reset_window(now);
         return true;
     }
 
-    const PerformanceStats& stats() const
+    PerformanceStats stats() const
     {
+        std::lock_guard<std::mutex> lock(mutex_);
         return stats_;
     }
 
 private:
-    void add_stage(
-        double& total_seconds,
-        uint64_t& samples)
-    {
-        const auto now = Clock::now();
-        total_seconds +=
-            std::chrono::duration<double>(
-                now - stage_start_
-            ).count();
-        samples++;
-        stage_start_ = now;
-    }
-
     static double average_ms(
         double total_seconds,
         uint64_t samples)
@@ -704,6 +689,7 @@ private:
         window_start_ = now;
         stream_frames_ = 0;
         pipeline_frames_ = 0;
+        window_drops_ = 0;
         acquire_samples_ = 0;
         preprocess_samples_ = 0;
         dpu_samples_ = 0;
@@ -711,7 +697,7 @@ private:
         overlay_samples_ = 0;
         jpeg_samples_ = 0;
         send_samples_ = 0;
-        total_samples_ = 0;
+        e2e_samples_ = 0;
         acquire_seconds_ = 0.0;
         preprocess_seconds_ = 0.0;
         dpu_seconds_ = 0.0;
@@ -719,15 +705,16 @@ private:
         overlay_seconds_ = 0.0;
         jpeg_seconds_ = 0.0;
         send_seconds_ = 0.0;
-        total_seconds_ = 0.0;
+        e2e_seconds_ = 0.0;
     }
 
+    mutable std::mutex mutex_;
     Clock::time_point window_start_;
-    Clock::time_point frame_start_;
-    Clock::time_point stage_start_;
     PerformanceStats stats_;
     uint64_t stream_frames_ = 0;
     uint64_t pipeline_frames_ = 0;
+    uint64_t window_drops_ = 0;
+    uint64_t dropped_frames_ = 0;
     uint64_t acquire_samples_ = 0;
     uint64_t preprocess_samples_ = 0;
     uint64_t dpu_samples_ = 0;
@@ -735,7 +722,7 @@ private:
     uint64_t overlay_samples_ = 0;
     uint64_t jpeg_samples_ = 0;
     uint64_t send_samples_ = 0;
-    uint64_t total_samples_ = 0;
+    uint64_t e2e_samples_ = 0;
     double acquire_seconds_ = 0.0;
     double preprocess_seconds_ = 0.0;
     double dpu_seconds_ = 0.0;
@@ -743,7 +730,7 @@ private:
     double overlay_seconds_ = 0.0;
     double jpeg_seconds_ = 0.0;
     double send_seconds_ = 0.0;
-    double total_seconds_ = 0.0;
+    double e2e_seconds_ = 0.0;
 };
 
 class SystemMonitor {
@@ -1285,13 +1272,13 @@ void log_telemetry(
         << performance.pipeline_fps
         << " FPS acquire="
         << performance.acquire_ms
-        << " ms resize="
+        << " ms preprocess="
         << performance.preprocess_ms
         << " ms dpu="
         << performance.dpu_latency_ms
         << " ms dpu_rate="
         << performance.dpu_fps
-        << " FPS depth_map="
+        << " FPS depth_postprocess="
         << performance.depth_map_ms
         << " ms overlay="
         << performance.overlay_ms
@@ -1299,9 +1286,13 @@ void log_telemetry(
         << performance.jpeg_ms
         << " ms send="
         << performance.send_ms
-        << " ms total="
-        << performance.total_ms
-        << " ms | CPU=";
+        << " ms e2e_latency="
+        << performance.e2e_latency_ms
+        << " ms dropped="
+        << performance.dropped_frames
+        << " drop_rate="
+        << performance.drop_rate_percent
+        << "% | CPU=";
 
     if (system.cpu_available) {
         output << system.cpu_percent << "%";
@@ -1437,6 +1428,83 @@ struct LetterboxTransform {
     float gain = 1.0f;
     int pad_x = 0;
     int pad_y = 0;
+};
+
+struct FramePacket {
+    uint64_t sequence = 0;
+    cv::Mat image;
+    std::vector<DetectionAnnotation> annotations;
+    Clock::time_point frame_start{};
+    double acquire_ms = 0.0;
+    double preprocess_ms = 0.0;
+    double dpu_ms = 0.0;
+    double depth_map_ms = 0.0;
+};
+
+enum class PublishResult {
+    published,
+    replaced,
+    stopped
+};
+
+class LatestFrameHandoff {
+public:
+    PublishResult publish(FramePacket&& packet)
+    {
+        PublishResult result;
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+
+            if (stopped_) {
+                return PublishResult::stopped;
+            }
+
+            result = pending_.has_value()
+                ? PublishResult::replaced
+                : PublishResult::published;
+            pending_ = std::move(packet);
+        }
+
+        condition_.notify_one();
+        return result;
+    }
+
+    bool wait_pop(FramePacket& packet)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        condition_.wait(
+            lock,
+            [this] {
+                return stopped_ || pending_.has_value();
+            }
+        );
+
+        if (stopped_) {
+            return false;
+        }
+
+        packet = std::move(*pending_);
+        pending_.reset();
+        return true;
+    }
+
+    void stop()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopped_ = true;
+            pending_.reset();
+        }
+
+        condition_.notify_all();
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    std::optional<FramePacket> pending_;
+    bool stopped_ = false;
 };
 
 class YoloV26Runner {
@@ -2154,6 +2222,90 @@ float median_depth_in_color_roi(
     return static_cast<float>(*middle) * calibration.depth_scale;
 }
 
+void draw_detection_annotations(
+    cv::Mat& image,
+    const std::vector<DetectionAnnotation>& annotations)
+{
+    for (const DetectionAnnotation& detection : annotations) {
+        const cv::Scalar box_color =
+            detection.class_id == 0
+                ? cv::Scalar(0, 255, 0)
+                : cv::Scalar(0, 165, 255);
+
+        cv::rectangle(
+            image,
+            cv::Rect(
+                detection.x,
+                detection.y,
+                detection.width,
+                detection.height
+            ),
+            box_color,
+            2
+        );
+
+        cv::rectangle(
+            image,
+            cv::Point(
+                std::max(0, detection.depth_x1),
+                std::max(0, detection.depth_y1)
+            ),
+            cv::Point(
+                std::min(
+                    image.cols - 1,
+                    detection.depth_x2
+                ),
+                std::min(
+                    image.rows - 1,
+                    detection.depth_y2
+                )
+            ),
+            cv::Scalar(255, 0, 0),
+            1
+        );
+
+        char label[128];
+        const char* class_name =
+            detection.class_id >= 0
+                && detection.class_id < NUM_CLASSES
+                ? CLASS_NAMES[detection.class_id]
+                : "Unknown";
+
+        if (detection.distance > 0.0f) {
+            std::snprintf(
+                label,
+                sizeof(label),
+                "%s %.2f | %.2f m",
+                class_name,
+                detection.score,
+                detection.distance
+            );
+        } else {
+            std::snprintf(
+                label,
+                sizeof(label),
+                "%s %.2f | N/A",
+                class_name,
+                detection.score
+            );
+        }
+
+        cv::putText(
+            image,
+            label,
+            cv::Point(
+                detection.x,
+                std::max(20, detection.y - 8)
+            ),
+            cv::FONT_HERSHEY_SIMPLEX,
+            0.55,
+            box_color,
+            2,
+            cv::LINE_AA
+        );
+    }
+}
+
 
 int create_server(int port)
 {
@@ -2470,320 +2622,341 @@ int main(int argc, char* argv[])
             << std::endl;
 
         PerformanceMonitor performance_monitor;
-        SystemMonitor system_monitor;
-        system_monitor.update_if_due();
-        std::vector<uchar> jpeg;
-        jpeg.reserve(
-            camera_configuration.color.width
-            * camera_configuration.color.height
-            / 4
-        );
-        const std::vector<int> jpeg_params = {
-            cv::IMWRITE_JPEG_QUALITY,
-            options.jpeg_quality
-        };
-        std::vector<DetectionAnnotation> annotations;
-        annotations.reserve(16);
-        LetterboxTransform letterbox;
+        LatestFrameHandoff handoff;
+        std::atomic<bool> running{true};
+        std::exception_ptr render_error;
+        std::exception_ptr capture_error;
+        std::thread renderer;
 
-        while (true) {
-            performance_monitor.begin_frame();
+        try {
+            renderer = std::thread([&]() {
+                try {
+                    SystemMonitor system_monitor;
+                    system_monitor.update_if_due();
+                    std::vector<uchar> jpeg;
+                    jpeg.reserve(
+                        camera_configuration.color.width
+                        * camera_configuration.color.height
+                        / 4
+                    );
+                    const std::vector<int> jpeg_params = {
+                        cv::IMWRITE_JPEG_QUALITY,
+                        options.jpeg_quality
+                    };
+                    FramePacket packet;
 
-            auto frames =
-                pipeline.wait_for_frames();
+                    while (running.load()) {
+                        if (!handoff.wait_pop(packet)) {
+                            break;
+                        }
 
-            performance_monitor.mark_acquired();
+                        const auto overlay_start = Clock::now();
+                        draw_detection_annotations(
+                            packet.image,
+                            packet.annotations
+                        );
+                        system_monitor.update_if_due();
+                        const PerformanceStats displayed =
+                            performance_monitor.stats();
+                        draw_telemetry(
+                            packet.image,
+                            displayed,
+                            system_monitor.stats()
+                        );
+                        const double overlay_ms = elapsed_ms(
+                            overlay_start,
+                            Clock::now()
+                        );
 
-            auto color =
-                frames.get_color_frame();
+                        jpeg.clear();
+                        const auto jpeg_start = Clock::now();
 
-            auto depth =
-                frames.get_depth_frame();
+                        const bool encoded = cv::imencode(
+                            ".jpg",
+                            packet.image,
+                            jpeg,
+                            jpeg_params
+                        );
+                        const double jpeg_ms = elapsed_ms(
+                            jpeg_start,
+                            Clock::now()
+                        );
 
-            if (!color || !depth) {
-                continue;
-            }
+                        if (!encoded) {
+                            continue;
+                        }
 
-            cv::Mat image(
-                cv::Size(
-                    camera_configuration.color.width,
-                    camera_configuration.color.height
-                ),
-                CV_8UC3,
-                const_cast<void*>(
-                    color.get_data()
-                ),
-                cv::Mat::AUTO_STEP
-            );
+                        std::string frame_header =
+                            "--frame\r\n"
+                            "Content-Type: image/jpeg\r\n"
+                            "Content-Length: "
+                            + std::to_string(
+                                jpeg.size()
+                            )
+                            + "\r\n\r\n";
 
-            image = image.clone();
+                        const auto send_start = Clock::now();
+                        const char* ending = "\r\n";
+                        const bool sent =
+                            send_all(
+                                client_fd,
+                                frame_header.data(),
+                                frame_header.size())
+                            && send_all(
+                                client_fd,
+                                jpeg.data(),
+                                jpeg.size())
+                            && send_all(
+                                client_fd,
+                                ending,
+                                2);
+                        const double send_ms = elapsed_ms(
+                            send_start,
+                            Clock::now()
+                        );
 
-            detector.preprocess(image, letterbox);
+                        if (!sent) {
+                            break;
+                        }
 
-            performance_monitor.mark_preprocessed();
+                        const double e2e_ms = elapsed_ms(
+                            packet.frame_start,
+                            Clock::now()
+                        );
+                        PerformanceStats snapshot;
 
-            const auto dpu_start = Clock::now();
-            detector.execute();
-            const auto dpu_end = Clock::now();
-
-            performance_monitor.mark_dpu_complete(
-                dpu_start,
-                dpu_end
-            );
-
-            const std::vector<Detection> detections =
-                detector.decode(
-                    options.confidence_threshold,
-                    options.max_detections
-                );
-
-            annotations.clear();
-
-            if (annotations.capacity() < detections.size()) {
-                annotations.reserve(detections.size());
-            }
-
-            for (const Detection& detection : detections) {
-
-                int x = static_cast<int>(
-                    (detection.x1 - letterbox.pad_x)
-                    / letterbox.gain
-                );
-
-                int y = static_cast<int>(
-                    (detection.y1 - letterbox.pad_y)
-                    / letterbox.gain
-                );
-
-                int x2 = static_cast<int>(
-                    (detection.x2 - letterbox.pad_x)
-                    / letterbox.gain
-                );
-
-                int y2 = static_cast<int>(
-                    (detection.y2 - letterbox.pad_y)
-                    / letterbox.gain
-                );
-
-                x = std::clamp(x, 0, image.cols - 1);
-                y = std::clamp(y, 0, image.rows - 1);
-                x2 = std::clamp(x2, 0, image.cols);
-                y2 = std::clamp(y2, 0, image.rows);
-
-                int w = x2 - x;
-
-                int h = y2 - y;
-
-                if (w <= 0 || h <= 0) {
-                    continue;
+                        if (performance_monitor.record_stream(
+                                overlay_ms,
+                                jpeg_ms,
+                                send_ms,
+                                e2e_ms,
+                                snapshot)) {
+                            log_telemetry(
+                                snapshot,
+                                system_monitor.stats()
+                            );
+                        }
+                    }
+                } catch (...) {
+                    render_error = std::current_exception();
                 }
 
-                int cx = x + w / 2;
-                int cy = y + h / 2;
+                running.store(false);
+                handoff.stop();
+            });
+        } catch (...) {
+            capture_error = std::current_exception();
+        }
 
-                int roi_w = std::max(
-                    2,
-                    static_cast<int>(
-                        w * DEPTH_ROI_SCALE
-                    )
-                );
+        if (renderer.joinable()) {
+            std::vector<DetectionAnnotation> annotations;
+            annotations.reserve(16);
+            LetterboxTransform letterbox;
+            uint64_t sequence = 0;
 
-                int roi_h = std::max(
-                    2,
-                    static_cast<int>(
-                        h * DEPTH_ROI_SCALE
-                    )
-                );
+            try {
+                while (running.load()) {
+                    const auto frame_start = Clock::now();
 
-                int dx1 =
-                    cx - roi_w / 2;
+                    auto frames =
+                        pipeline.wait_for_frames();
 
-                int dy1 =
-                    cy - roi_h / 2;
+                    const auto acquire_end = Clock::now();
 
-                int dx2 =
-                    cx + roi_w / 2;
+                    auto color =
+                        frames.get_color_frame();
 
-                int dy2 =
-                    cy + roi_h / 2;
+                    auto depth =
+                        frames.get_depth_frame();
 
-                const float distance =
-                    median_depth_in_color_roi(
-                        depth,
-                        depth_mapping,
-                        dx1,
-                        dy1,
-                        dx2,
-                        dy2
-                    );
+                    if (!color || !depth) {
+                        continue;
+                    }
 
-                annotations.push_back({
-                    detection.class_id,
-                    x,
-                    y,
-                    w,
-                    h,
-                    dx1,
-                    dy1,
-                    dx2,
-                    dy2,
-                    detection.score,
-                    distance
-                });
-            }
-
-            performance_monitor.mark_depth_map_complete();
-
-            for (const DetectionAnnotation& detection : annotations) {
-                const cv::Scalar box_color =
-                    detection.class_id == 0
-                        ? cv::Scalar(0, 255, 0)
-                        : cv::Scalar(0, 165, 255);
-
-                cv::rectangle(
-                    image,
-                    cv::Rect(
-                        detection.x,
-                        detection.y,
-                        detection.width,
-                        detection.height
-                    ),
-                    box_color,
-                    2
-                );
-
-                cv::rectangle(
-                    image,
-                    cv::Point(
-                        std::max(0, detection.depth_x1),
-                        std::max(0, detection.depth_y1)
-                    ),
-                    cv::Point(
-                        std::min(
-                            image.cols - 1,
-                            detection.depth_x2
+                    cv::Mat image(
+                        cv::Size(
+                            camera_configuration.color.width,
+                            camera_configuration.color.height
                         ),
-                        std::min(
-                            image.rows - 1,
-                            detection.depth_y2
-                        )
-                    ),
-                    cv::Scalar(255, 0, 0),
-                    1
-                );
-
-                char label[128];
-                const char* class_name =
-                    detection.class_id >= 0
-                        && detection.class_id < NUM_CLASSES
-                        ? CLASS_NAMES[detection.class_id]
-                        : "Unknown";
-
-                if (detection.distance > 0.0f) {
-                    std::snprintf(
-                        label,
-                        sizeof(label),
-                        "%s %.2f | %.2f m",
-                        class_name,
-                        detection.score,
-                        detection.distance
+                        CV_8UC3,
+                        const_cast<void*>(
+                            color.get_data()
+                        ),
+                        cv::Mat::AUTO_STEP
                     );
-                } else {
-                    std::snprintf(
-                        label,
-                        sizeof(label),
-                        "%s %.2f | N/A",
-                        class_name,
-                        detection.score
+
+                    image = image.clone();
+
+                    detector.preprocess(image, letterbox);
+
+                    const auto preprocess_end = Clock::now();
+
+                    detector.execute();
+
+                    const auto dpu_end = Clock::now();
+
+                    const std::vector<Detection> detections =
+                        detector.decode(
+                            options.confidence_threshold,
+                            options.max_detections
+                        );
+
+                    annotations.clear();
+
+                    if (annotations.capacity() < detections.size()) {
+                        annotations.reserve(detections.size());
+                    }
+
+                    for (const Detection& detection : detections) {
+
+                        int x = static_cast<int>(
+                            (detection.x1 - letterbox.pad_x)
+                            / letterbox.gain
+                        );
+
+                        int y = static_cast<int>(
+                            (detection.y1 - letterbox.pad_y)
+                            / letterbox.gain
+                        );
+
+                        int x2 = static_cast<int>(
+                            (detection.x2 - letterbox.pad_x)
+                            / letterbox.gain
+                        );
+
+                        int y2 = static_cast<int>(
+                            (detection.y2 - letterbox.pad_y)
+                            / letterbox.gain
+                        );
+
+                        x = std::clamp(x, 0, image.cols - 1);
+                        y = std::clamp(y, 0, image.rows - 1);
+                        x2 = std::clamp(x2, 0, image.cols);
+                        y2 = std::clamp(y2, 0, image.rows);
+
+                        int w = x2 - x;
+
+                        int h = y2 - y;
+
+                        if (w <= 0 || h <= 0) {
+                            continue;
+                        }
+
+                        int cx = x + w / 2;
+                        int cy = y + h / 2;
+
+                        int roi_w = std::max(
+                            2,
+                            static_cast<int>(
+                                w * DEPTH_ROI_SCALE
+                            )
+                        );
+
+                        int roi_h = std::max(
+                            2,
+                            static_cast<int>(
+                                h * DEPTH_ROI_SCALE
+                            )
+                        );
+
+                        int dx1 =
+                            cx - roi_w / 2;
+
+                        int dy1 =
+                            cy - roi_h / 2;
+
+                        int dx2 =
+                            cx + roi_w / 2;
+
+                        int dy2 =
+                            cy + roi_h / 2;
+
+                        const float distance =
+                            median_depth_in_color_roi(
+                                depth,
+                                depth_mapping,
+                                dx1,
+                                dy1,
+                                dx2,
+                                dy2
+                            );
+
+                        annotations.push_back({
+                            detection.class_id,
+                            x,
+                            y,
+                            w,
+                            h,
+                            dx1,
+                            dy1,
+                            dx2,
+                            dy2,
+                            detection.score,
+                            distance
+                        });
+                    }
+
+                    const auto depth_end = Clock::now();
+
+                    FramePacket packet;
+                    packet.sequence = sequence++;
+                    packet.image = std::move(image);
+                    packet.annotations = std::move(annotations);
+                    packet.frame_start = frame_start;
+                    packet.acquire_ms = elapsed_ms(
+                        frame_start,
+                        acquire_end
                     );
+                    packet.preprocess_ms = elapsed_ms(
+                        acquire_end,
+                        preprocess_end
+                    );
+                    packet.dpu_ms = elapsed_ms(
+                        preprocess_end,
+                        dpu_end
+                    );
+                    packet.depth_map_ms = elapsed_ms(
+                        dpu_end,
+                        depth_end
+                    );
+
+                    performance_monitor.record_pipeline(
+                        packet.acquire_ms,
+                        packet.preprocess_ms,
+                        packet.dpu_ms,
+                        packet.depth_map_ms
+                    );
+
+                    const PublishResult result =
+                        handoff.publish(std::move(packet));
+
+                    if (result == PublishResult::replaced) {
+                        performance_monitor.record_drop();
+                    } else if (result == PublishResult::stopped) {
+                        break;
+                    }
                 }
-
-                cv::putText(
-                    image,
-                    label,
-                    cv::Point(
-                        detection.x,
-                        std::max(20, detection.y - 8)
-                    ),
-                    cv::FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    box_color,
-                    2,
-                    cv::LINE_AA
-                );
-            }
-
-            system_monitor.update_if_due();
-
-            draw_telemetry(
-                image,
-                performance_monitor.stats(),
-                system_monitor.stats()
-            );
-
-            performance_monitor.mark_overlay_complete();
-
-            jpeg.clear();
-            performance_monitor.begin_jpeg();
-
-            const bool encoded = cv::imencode(
-                ".jpg",
-                image,
-                jpeg,
-                jpeg_params
-            );
-
-            performance_monitor.mark_jpeg_complete();
-
-            if (!encoded) {
-                continue;
-            }
-
-            std::string frame_header =
-                "--frame\r\n"
-                "Content-Type: image/jpeg\r\n"
-                "Content-Length: "
-                + std::to_string(
-                    jpeg.size()
-                )
-                + "\r\n\r\n";
-
-            performance_monitor.begin_send();
-
-            if (!send_all(
-                    client_fd,
-                    frame_header.data(),
-                    frame_header.size())) {
-                break;
-            }
-
-            if (!send_all(
-                    client_fd,
-                    jpeg.data(),
-                    jpeg.size())) {
-                break;
-            }
-
-            const char* ending = "\r\n";
-
-            if (!send_all(
-                    client_fd,
-                    ending,
-                    2)) {
-                break;
-            }
-
-            if (performance_monitor.mark_frame_sent()) {
-                log_telemetry(
-                    performance_monitor.stats(),
-                    system_monitor.stats()
-                );
+            } catch (...) {
+                capture_error = std::current_exception();
             }
         }
 
-        std::cout
-            << "Client disconnected."
-            << std::endl;
+        running.store(false);
+        handoff.stop();
+
+        if (capture_error) {
+            shutdown(client_fd, SHUT_RDWR);
+        }
+
+        if (renderer.joinable()) {
+            renderer.join();
+        }
+
+        if (!capture_error && !render_error) {
+            std::cout
+                << "Client disconnected."
+                << std::endl;
+        }
 
         close(client_fd);
         close(server_fd);
@@ -2797,6 +2970,14 @@ int main(int argc, char* argv[])
         std::cout
             << "Camera stopped"
             << std::endl;
+
+        if (capture_error) {
+            std::rethrow_exception(capture_error);
+        }
+
+        if (render_error) {
+            std::rethrow_exception(render_error);
+        }
 
         return 0;
     }

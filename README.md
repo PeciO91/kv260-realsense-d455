@@ -150,6 +150,17 @@ Annotated classes are `Person` (green) and `Human face` (orange); each
 box also shows the calibrated 5x5 median depth of its central ROI. Open
 `http://KV260_IP:8081/` to view the stream.
 
+The app runs a two-stage pipeline: the main thread owns the camera, DPU
+inference, and depth mapping, while a renderer thread owns annotation
+drawing, JPEG encoding, and MJPEG sending. A bounded latest-frame handoff
+with queue capacity 1 sits between them: publishing onto an occupied
+slot replaces the pending frame, which avoids latency buildup when the
+renderer falls behind. Terminal telemetry reports independent pipeline
+and stream FPS, per-stage timings for `acquire`, `preprocess`, `dpu`,
+`depth_postprocess`, `overlay`, `jpeg`, and `send`, cumulative dropped
+frames plus per-window drop rate, and true end-to-end latency from frame
+capture to completed send.
+
 ## DenseBox telemetry
 
 The live DenseBox stream draws a compact telemetry panel over the MJPEG
