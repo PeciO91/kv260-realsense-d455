@@ -110,6 +110,46 @@ quality/performance comparisons:
         --depth-width 640 \
         --depth-height 480
 
+## YOLOv26 face/human live stream
+
+Build and run the DPU-backed YOLOv26 Person/Human face stream:
+
+    ./scripts/build_live_yolov26.sh
+    ./inference/live_yolov26_realsense
+
+The default model path is `yolov26n_facehuman_kria.xmodel` resolved
+relative to the working directory, so run the binary from the folder
+containing the xmodel or pass an explicit path:
+
+    ./inference/live_yolov26_realsense \
+        --model /path/to/model.xmodel \
+        --confidence 0.25 \
+        --max-detections 100
+
+- `--model PATH`: xmodel file (default
+  `yolov26n_facehuman_kria.xmodel`).
+- `--confidence FLOAT`: detection confidence in `[0, 1]` (default 0.1).
+  Thresholding happens in quantized INT8 logit space.
+- `--max-detections N`: positive cap on reported boxes (default 300).
+  Detections are sorted by score and truncated; no NMS is applied.
+
+All existing live-stream options (`--port`, `--jpeg-quality`, `--depth-width`,
+`--depth-height`, `--list-profiles`) work unchanged.
+
+The app talks to Vitis AI 3.5 directly through XIR/VART `RunnerExt`: it
+deserializes the graph, selects the single `DPU` child subgraph, and
+validates the raw split one2one output contract (one 4-channel box tensor
+and one 2-channel class tensor per stride-8/16/32 level, matched by
+spatial shape, not tensor order or names). Startup prints every input and
+output tensor's name, shape, data type, and fix point. Preprocessing
+replicates the reference letterbox (RGB, INTER_LINEAR, 114 border) and
+INT8 quantization via a cached 256-entry LUT. Decoding is anchor-free
+`REG_MAX = 1` LTRB distance decode with stable sigmoid scores and no NMS.
+
+Annotated classes are `Person` (green) and `Human face` (orange); each
+box also shows the calibrated 5x5 median depth of its central ROI. Open
+`http://KV260_IP:8081/` to view the stream.
+
 ## DenseBox telemetry
 
 The live DenseBox stream draws a compact telemetry panel over the MJPEG
