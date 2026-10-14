@@ -10,6 +10,8 @@ g++ \
     -Wall \
     -Wextra \
     inference/live_yolov26_realsense.cpp \
+    inference/yolov26_realsense_core.cpp \
+    -I inference \
     -I"${RS_PREFIX}/include" \
     -L"${RS_PREFIX}/lib64" \
     $(pkg-config --cflags --libs opencv4) \

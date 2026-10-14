@@ -266,6 +266,139 @@ Notes:
   Pi-side reception/decoding, real Redis connectivity, and sustained
   combined CPU load remain to be verified with the receiver developer.
 
+## Native YOLOv26 RTP sender
+
+`inference/live_yolov26_rpi` is the native C++ sibling of the MJPEG
+application. It runs the same D455 + VART/DPU inference and depth
+annotation pipeline, then pushes annotated frames through appsrc into
+a GStreamer H.264/RTP/UDP pipeline aimed at a Raspberry Pi receiver,
+and publishes the face-detection state on Redis Pub/Sub.
+
+Wire contract (same as the Python mock):
+
+- RTP: `application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=96`,
+  MTU 1200 bytes.
+- H.264: byte-stream, access-unit aligned, baseline profile,
+  `config-interval=1`.
+- Redis: RESP2 `PUBLISH` on the configured channel with payload exactly
+  `{"face_detected":true}` or `{"face_detected":false}`.
+
+Prerequisites on the KV260:
+
+- RealSense D455 over the existing RSUSB build (`/root/librealsense-rsusb`),
+  the VART/XIR toolchain, and `/home/root/yolov26n_facehuman_kria.xmodel`
+  (or `--model`).
+- GStreamer 1.18 runtime + plugins plus `hiredis`, staged under a
+  dependency prefix such as `/home/root/kv260-network-deps`
+  (`lib/gstreamer-1.0` must exist there). Both the build script and the
+  launcher auto-discover `$HOME/kv260-network-deps` or take
+  `--deps-prefix DIR`. The build script sets `PKG_CONFIG_PATH` only
+  for the compile and bakes an `rpath` into the binary; the launcher
+  additionally sets `LD_LIBRARY_PATH`, `GST_PLUGIN_PATH(_1_0)` and an
+  arch-specific registry file privately for the child process only.
+  Nothing is installed globally.
+- A H.264 encoder: `omxh264enc` (preferred when the VCU device tree is
+  present) or `x264enc`. `--encoder auto` tries OMX first and falls
+  back to x264; on this board `/dev/allegroIP` is absent, so
+  `--encoder x264` is recommended. Forcing a missing/broken encoder
+  fails the run.
+
+Build on the board from the repository root:
+
+    sh scripts/build_live_yolov26.sh        # MJPEG application
+    sh scripts/build_live_yolov26_rpi.sh    # native RTP sender
+
+`build_live_yolov26_rpi.sh` also accepts `--deps-prefix DIR` and
+`--rs-prefix DIR` (alternate librealsense install; default
+`/root/librealsense-rsusb`) and requires the pkg-config modules
+`opencv4`, `gstreamer-1.0`, `gstreamer-app-1.0`, `gstreamer-video-1.0`,
+`hiredis` plus `librealsense2` under the RS prefix.
+
+Run:
+
+    python3 scripts/run_live_yolov26_rpi.py \
+        --pi-host <PI_IP> \
+        --model /home/root/yolov26n_facehuman_kria.xmodel \
+        --encoder x264 \
+        --video-port 5000 \
+        --redis-host <REDIS_IP> \
+        --redis-port 6379 \
+        --redis-channel face_detection
+
+The launcher accepts `--deps-prefix DIR` and `--binary PATH` ahead of
+the sender arguments; a literal `--` before the sender arguments also
+works. The same binary can be invoked directly if the dependency
+environment is already set:
+
+    ./inference/live_yolov26_rpi \
+        --pi-host <PI_IP> --encoder x264 \
+        --model /home/root/yolov26n_facehuman_kria.xmodel
+
+Options (see `--help` for bounds): `--pi-host` (required; IPv4, IPv6
+including bracketed/scoped literals, or DNS name), `--video-port`
+(default 5000), `--encoder auto|omx|x264` (default auto),
+`--bitrate-kbps` (default 4000), `--redis-host` (defaults to the Pi
+host; IPv6 ok), `--redis-port` (default 6379), `--redis-channel`
+(default `face_detection`), `--redis-interval-seconds` (default 1.0,
+minimum 0.1), `--face-stale-seconds` (default 2.0, minimum ~1 ns),
+`--redis-timeout-ms` (integer, default 200, range 1..10000),
+`--duration-seconds` (optional; all second-valued options are capped at
+630720000 s), `--telemetry true|false` (explicit value required,
+default false), plus the shared inference options `--model`,
+`--confidence` `[0,1]`, `--max-detections` (default 300),
+`--depth-width`, `--depth-height`, `--list-profiles`.
+
+Behaviour notes:
+
+- The face state is the latest successful inference result for class 1
+  ("Human face") with a valid in-bounds box; it is published on the
+  report interval only while fresh (< `--face-stale-seconds`). There
+  is no initial publication, stale results go silent, reconnects re-read
+  the freshest state before writing, and missed report deadlines are
+  skipped rather than replayed.
+- Video RTP and the Redis status channel are independent channels:
+  Redis connection/publish failures never stop video streaming, and
+  reconnect attempts back off 1/2/4/5 s in the background. They are
+  not fully fault-isolated lifecycles: a fatal video or inference
+  error still terminates the application and its status reporting.
+- The camera profile is color 848x480@30. By default, depth uses the
+  smallest Z16 profile at the color FPS (424x240 on the tested D455);
+  `--depth-width`/`--depth-height` request an explicit matching profile.
+- RTP timestamps follow host acquisition time, retaining gaps when
+  frames are dropped. The nominal 30 FPS caps are not a throughput or
+  Pi display-rate guarantee; raw-frame buffering is bounded and
+  latest-only.
+- `--duration-seconds` starts counting only after encoder preflight,
+  camera start, warmup, and pipeline start complete. SIGINT/SIGTERM
+  stop cleanly at any phase.
+- `--help` runs entirely offline: no Pi host, model, camera, or
+  network initialization. `--list-profiles` skips the Pi host and
+  model checks but DOES open the camera to enumerate profiles.
+- Video and Redis hosts are resolved to numeric addresses once at
+  startup; a slow DNS server can therefore add startup latency before
+  streaming begins. A Redis DNS failure marks status unavailable
+  rather than publishing a stale/false state.
+- The sender targets a private endpoint: no authentication or TLS on
+  Redis, no destination NAT traversal.
+- Exit 0 means local completion; it does not prove UDP delivery to a
+  Pi or Redis health. When telemetry is enabled the overlay/log
+  reports inference FPS, appsrc submissions/s, encoded AU/s, replaced
+  frames and mean stage timings (acquire, preprocess, DPU,
+  decode-depth, overlay, push preparation + admission, host
+  start-to-enqueue).
+- Known runtime limitation: a hung camera/DPU call inside VART is not
+  cancellable; shutdown can block there the same way the MJPEG
+  application does.
+
+Tests (control fixture is stdlib-only; the transport fixture needs the
+native GStreamer/hiredis development files and is skipped otherwise):
+
+    python3 -m unittest discover -s tests -p 'test_live_yolov26_rpi.py'
+
+Known limitation: the OMX path requires the VCU/Allegro device tree;
+on boards where `/dev/allegro*` is absent, use `--encoder x264` or let
+`auto` fall back.
+
 ## DenseBox telemetry
 
 The live DenseBox stream draws a compact telemetry panel over the MJPEG
