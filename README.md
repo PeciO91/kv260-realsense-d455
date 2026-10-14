@@ -136,7 +136,8 @@ containing the xmodel or pass an explicit path:
 All existing live-stream options (`--port`, `--jpeg-quality`, `--depth-width`,
 `--depth-height`, `--list-profiles`) work unchanged.
 
-The app talks to Vitis AI 3.5 directly through XIR/VART `RunnerExt`: it
+The app talks to the deployed VART/Vitis AI 3.0 runtime directly through
+XIR/VART `RunnerExt`: it
 deserializes the graph, selects the single `DPU` child subgraph, and
 validates the raw split one2one output contract (one 4-channel box tensor
 and one 2-channel class tensor per stride-8/16/32 level, matched by
@@ -160,6 +161,110 @@ and stream FPS, per-stage timings for `acquire`, `preprocess`, `dpu`,
 `depth_postprocess`, `overlay`, `jpeg`, and `send`, cumulative dropped
 frames plus per-window drop rate, and true end-to-end latency from frame
 capture to completed send.
+
+## Mock YOLOv26 network sender
+
+`scripts/mock_yolov26_sender.py` is a standard-library-only mock of the
+future network sender. It transmits synthetic `videotestsrc` imagery as
+H.264/RTP/UDP and periodically publishes a randomized face boolean to
+Redis, using the same wire contract planned for real inference. It does
+not run the camera, the model, or the DPU, and it changes nothing about
+the real streams or the receiver (owned by the Pi developer).
+
+Prerequisites:
+
+- Python >= 3.9, standard library only. No OpenCV, NumPy, redis-cli,
+  hiredis, redis-py, or model files needed.
+- `gst-launch-1.0` / `gst-inspect-1.0` on PATH plus the usual
+  videotestsrc/capsfilter/queue/videoconvert/h264parse/rtph264pay/
+  fakesink/udpsink factories and a working H.264 encoder
+  (`x264enc` or `omxh264enc`).
+
+Wire contract (must match on both ends):
+
+- Video: unicast RTP/UDP to the configured host, UDP port 5000 default;
+  H.264 RFC 6184, MTU 1200, 848x480 at nominal 30 FPS (configurable via
+  `--width`/`--height`/`--fps`), encoder target 4000 kbit/s, no B-frames,
+  keyframe every 30 frames, SPS/PPS repetition configured with
+  `config-interval=1`. Receiver caps:
+  `application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=96`.
+  Best-effort UDP: no session negotiation, RTCP, retransmission or
+  acknowledgement.
+- Redis: sender is a PUBLISH client only (RESP2 over TCP, no AUTH/TLS/db
+  select). Server runs on the receiver side; default port 6379, default
+  channel `face_detection`. Exact payload `{"face_detected":true}` or
+  `{"face_detected":false}` every 1.0 s (configurable >= 0.1 s), repeated
+  while the synthetic state is fresh (< 2.0 s old). No replay or catch-up
+  bursts after reconnect; missing messages mean unavailable, not false.
+  A successful PUBLISH to zero subscribers is valid. The Redis server
+  must stay private/source-restricted; no CLI passwords are used.
+- Video and Redis status are independent streams, not frame-paired.
+- Future real meaning: the boolean is true when the latest successful
+  inference frame contains at least one valid class-1 Human-face
+  detection, else false; nothing is published before the first result or
+  while the state is stale. This mock's value is random/forced and is NOT
+  computed from the synthetic pixels; the real annotated stream is
+  deferred work.
+
+Options (see `--help` for bounds):
+
+`--pi-host` (required), `--video-port` (5000),
+`--encoder auto|omx|x264` (auto), `--bitrate-kbps` (4000),
+`--width`/`--height` (848x480, even 2..8192), `--fps` (30, 1..240),
+`--redis-host` (defaults to the Pi host), `--redis-port` (6379),
+`--redis-channel` (face_detection), `--redis-interval-seconds` (1.0,
+>=0.1), `--face-stale-seconds` (2.0), `--redis-timeout-ms` (200, max
+10000), `--pattern snow|ball` (snow), `--face-mode
+random|true|false|alternate` (random), `--seed`, `--duration-seconds`,
+`--deps-prefix`.
+
+Run on the Kria (software x264 in the private prefix is auto-detected at
+`~/kv260-network-deps`, no manual exports needed):
+
+    python3 scripts/mock_yolov26_sender.py --pi-host PI_LAN_IP --encoder x264
+
+With an explicit dependency prefix:
+
+    python3 scripts/mock_yolov26_sender.py --pi-host PI_LAN_IP \
+        --encoder x264 --deps-prefix /home/root/kv260-network-deps
+
+Deterministic acceptance run against a TEST channel/port only (never
+flip the live `face_detection` channel during automation; coordinate the
+UDP test port with the receiver developer):
+
+    python3 scripts/mock_yolov26_sender.py --pi-host PI_LAN_IP \
+        --video-port 5002 --encoder x264 --face-mode alternate \
+        --redis-channel face_detection_mock_test \
+        --redis-interval-seconds 0.3 --duration-seconds 3
+
+Notes:
+
+- `--encoder auto` (default) tries `omxh264enc` first and falls back
+  visibly to `x264enc`. The OMX path currently fails on the Kria
+  (`/dev/allegro` nodes absent), so `--encoder x264` is recommended.
+- The dependency prefix environment is applied only to child GStreamer
+  processes (LD_LIBRARY_PATH, GST_PLUGIN_PATH(_1_0), private
+  GST_REGISTRY); the caller's environment and system config are not
+  modified. Without a prefix the system plugins are used (works on the
+  WSL/dev PC).
+- `--face-mode alternate` toggles at the nominal report cadence; after
+  missed deadlines it may repeat a value rather than strictly toggling
+  each delivered message. `--seed` seeds the face-value generator only,
+  not GStreamer `snow` pixels, and wall-clock sampling makes published
+  timing not bit-for-bit deterministic.
+- A local "MOCK" banner is printed at startup; nothing marks the mock on
+  the wire. `snow` is random noise and compresses poorly, so it is not a
+  bitrate benchmark; `--pattern ball` is a calmer diagnostic.
+- `--duration-seconds` starts counting after preflight and video launch.
+  DNS resolution can outlast the socket timeout; a clean exit 0 means
+  local completion only - it does not prove UDP delivery to the Pi or
+  Redis health (watch the published/subscriber and error logs).
+- Tests (no GStreamer/Redis needed; fakes are used):
+
+      python3 -m unittest discover -s tests -p 'test_mock_yolov26_sender.py'
+
+  Pi-side reception/decoding, real Redis connectivity, and sustained
+  combined CPU load remain to be verified with the receiver developer.
 
 ## DenseBox telemetry
 
