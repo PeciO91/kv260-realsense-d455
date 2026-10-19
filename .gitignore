@@ -35,3 +35,8 @@ Thumbs.db
 # Windows Mark of the Web
 *:Zone.Identifier
 Zone.Identifier
+
+.projectmem/events.jsonl
+.projectmem/watch.pid
+.projectmem/watch.log
+.projectmem/structure.json

@@ -4,7 +4,8 @@ Intel RealSense D455 camera pipeline for the AMD/Xilinx Kria KV260.
 
 ## Current status
 
-Working:
+Implemented (inference requires the board runtime and an external compiled
+model):
 
 - Intel RealSense D455 detection
 - RGB capture at 640x480
@@ -13,33 +14,37 @@ Working:
 - Stable pipeline start and stop
 - JPEG frame capture
 - Live MJPEG stream over HTTP
+- Simultaneous RGB/depth and full-frame depth-to-color alignment diagnostics
+- DenseBox live face detection and YOLOv26 live person/face detection
+- Live-app detection overlays with sparse calibrated median depth per detection
+- Native Raspberry Pi sender: H.264/RTP video plus independent Redis face status
+- Hardware-free Python mock of the Pi video/status wire contract
 
 ## Camera pipeline
 
-RealSense D455
-    |
-    | USB
-    v
-librealsense RSUSB
-    |
-    v
-pyrealsense2
-    |
-    v
-RGB frame
-    |
-    +----> OpenCV / JPEG
-    |
-    +----> HTTP MJPEG stream
-    |
-    v
-Future YOLO26 preprocessing
-    |
-    v
-KV260 DPU
-    |
-    v
-Person / Human Face detections
+```
+Python diagnostics/previews          Native C++ live inference apps
+=======================              ==============================
+
+RealSense D455                       RealSense D455
+    | USB                                | USB
+    v                                    v
+librealsense RSUSB                     librealsense RSUSB
+    |                                    v
+    v                              model-specific preprocessing
+pyrealsense2                             |
+    |                                    v
+    v                                KV260 DPU
+RGB/depth diagnostics                    |
+    |                                    v
+    +----> OpenCV / JPEG           Face/person detections (by model)
+    |                                    + sparse calibrated depth
+    +----> HTTP MJPEG preview            |
+                                         +----> annotated HTTP MJPEG
+                                         |
+                                         +----> Pi: H.264/RTP video
+                                               + independent Redis status
+```
 
 ## Camera test
 
@@ -229,12 +234,11 @@ Wire contract (must match on both ends):
   A successful PUBLISH to zero subscribers is valid. The Redis server
   must stay private/source-restricted; no CLI passwords are used.
 - Video and Redis status are independent streams, not frame-paired.
-- Future real meaning: the boolean is true when the latest successful
+- Real sender meaning: the boolean is true when the latest successful
   inference frame contains at least one valid class-1 Human-face
   detection, else false; nothing is published before the first result or
   while the state is stale. This mock's value is random/forced and is NOT
-  computed from the synthetic pixels; the real annotated stream is
-  deferred work.
+  computed from the synthetic pixels.
 
 Options (see `--help` for bounds):
 
@@ -463,15 +467,18 @@ See:
 
     docs/realsense-rsusb.md
 
-## Future work
+## Model and deployment scope
 
-- Depth stream
-- RGB/depth alignment
-- DPU-compatible YOLO26n
-- INT8 Vitis AI inference
-- Person and Human Face detection
-- Detection overlays
-- Distance estimation from depth data
+Trained and compiled `.xmodel` artifacts are external inputs and are not
+committed to this repository; `models/` is a placeholder directory. No
+training, quantization, or compilation tooling is included here — models
+are produced elsewhere and deployed to the board.
+
+The YOLOv26 applications require the documented Vitis AI 3.0 / VART runtime
+on the KV260 and a model matching the split one2one INT8 output contract
+described in [YOLOv26 face/human live stream](#yolov26-facehuman-live-stream);
+arbitrary YOLO exports are not supported. The Raspberry Pi video receiver
+and Redis endpoint are maintained outside this repository.
 
 ## RGB + depth test
 
@@ -493,5 +500,11 @@ Example:
 
     Frame 12: RGB 640x480, Depth 640x480, center distance = 1.842 m
 
-This test does not yet align the depth image to the RGB camera.
-RGB-to-depth alignment will be added separately before YOLO integration.
+`camera/depth_test.py` reports raw, unaligned depth. For a full-frame
+depth-to-color alignment diagnostic run `python3 camera/aligned_depth_test.py`,
+or `python3 camera/live_rgb_depth.py` for a browser preview with aligned
+central depth. The native live inference apps do not use full-frame
+alignment; they map each detection's central color ROI into the raw depth
+frame with a sparse calibrated 5x5 median instead. The single-shot DenseBox
+diagnostic (`inference/densebox_realsense.cpp`) does use full-frame
+alignment — see [inference/README.md](inference/README.md).
