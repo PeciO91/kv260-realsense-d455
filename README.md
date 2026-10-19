@@ -164,6 +164,36 @@ capture to completed send.
 
 ## Mock YOLOv26 network sender
 
+### Quick start
+
+The mock sender streams synthetic `videotestsrc` video as
+H.264/RTP/UDP and periodically publishes a simulated, independent
+face-detection boolean over Redis Pub/Sub. It needs no camera, model,
+or DPU, and the synthetic pixels have no relationship to the published
+boolean. It requires only Python >= 3.9 (standard library; no pip
+packages) on the sender, plus the GStreamer command-line tools and
+encoder plugins; the receiver needs H.264 decoding and a reachable
+Redis server.
+
+Run from the repository root (replace `PI_IP` with the Pi address):
+
+    python3 scripts/mock_yolov26_sender.py \
+        --pi-host PI_IP \
+        --encoder x264 \
+        --pattern ball \
+        --face-mode alternate \
+        --video-port 5002 \
+        --redis-channel face_detection_mock_test \
+        --redis-interval-seconds 1 \
+        --duration-seconds 30
+
+This example uses UDP video port 5002 and Redis TCP port 6379; the
+video port must match the receiver and the Redis channel name must be
+shared between sender and subscriber. The detailed usage guide is in
+[Mock sender usage guide](scripts/README.md).
+
+### Reference
+
 `scripts/mock_yolov26_sender.py` is a standard-library-only mock of the
 future network sender. It transmits synthetic `videotestsrc` imagery as
 H.264/RTP/UDP and periodically publishes a randomized face boolean to
