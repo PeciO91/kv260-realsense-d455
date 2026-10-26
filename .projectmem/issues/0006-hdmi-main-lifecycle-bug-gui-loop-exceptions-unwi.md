@@ -1,0 +1,4 @@
+# #0006 HDMI main lifecycle bug: GUI-loop exceptions unwind past a joinable worker std::thread -> std::terminate. Needs an RAII guard declared after the thread object that always sets running=false, stops the handoff and joins. Also switch the signal flag to volatile sig_atomic_t per signal-safety rules. [inference/live_yolov26_hdmi.cpp]
+
+- 2026-10-26T09:20:41Z `issue`: HDMI main lifecycle bug: GUI-loop exceptions unwind past a joinable worker std::thread -> std::terminate. Needs an RAII guard declared after the thread object that always sets running=false, stops the handoff and joins. Also switch the signal flag to volatile sig_atomic_t per signal-safety rules. [inference/live_yolov26_hdmi.cpp] [inference/live_yolov26_hdmi.cpp]
+- 2026-10-26T09:25:41Z `fix`: HDMI lifecycle fixed and verified: WorkerGuard covers all exits, sig_atomic_t flag, start_capture_worker seam exercised by handoff fixture (synthetic/real dispatch, error propagation, running cleared).

@@ -24,6 +24,7 @@ env/
 *.png
 output/
 runs/
+inference/live_yolov26_hdmi
 
 # Logs
 *.log

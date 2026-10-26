@@ -174,6 +174,50 @@ and stream FPS, per-stage timings for `acquire`, `preprocess`, `dpu`,
 frames plus per-window drop rate, and true end-to-end latency from frame
 capture to completed send.
 
+## YOLOv26 HDMI local display
+
+`live_yolov26_hdmi` renders the same annotated YOLOv26 stream directly
+on the board's local X desktop (fullscreen by default), without the
+browser or Pi path:
+
+    ./scripts/build_live_yolov26_hdmi.sh
+    ./inference/live_yolov26_hdmi --model /path/to/model.xmodel
+
+A Python launcher wraps the binary and provides offline display
+diagnostics that never touch the camera or model:
+
+    python3 scripts/run_live_yolov26_hdmi.py --check-display
+    python3 scripts/run_live_yolov26_hdmi.py --wake-display
+    python3 scripts/run_live_yolov26_hdmi.py -- --test-pattern
+
+`--check-display` queries XRandR and DPMS and exits; `--wake-display`
+forces DPMS on and resets the screen saver once (it does not change
+power-saving timeouts or persistent display policy). The launcher
+defaults to `DISPLAY=:0` (`--display` overrides), preserves the supplied
+`XAUTHORITY`, and never broadens X access. Forwarded arguments after
+`--` are validated and run by the native binary.
+
+Display options: `--display NAME` (default `:0`), `--fullscreen
+true|false` (default true), `--telemetry true|false` (default false),
+`--duration-seconds SECONDS` (positive finite; with `--test-pattern`
+the default is 10 s, otherwise the app runs until stopped). All shared
+inference options (`--model`, `--confidence` default 0.30,
+`--max-detections` default 50, `--depth-width`/`--depth-height`,
+`--show-depth-roi` default false, `--show-confidence` default true)
+match the other YOLO applications. Exit on Escape, `q`, window close
+or Ctrl+C.
+
+`--test-pattern` is an independent synthetic mode: it renders generated
+color-bar frames labelled `DISPLAY TEST - NO CAMERA / NO INFERENCE`
+through the same render path without opening the camera, enumerating
+RealSense devices, or loading a model. `--help` is entirely offline.
+Invalid arguments and an unreachable `--display` are rejected before
+any camera or model initialization.
+
+Real camera/model runs on the board are verified manually by the user;
+automated tests cover only argument parsing, geometry, launcher
+actions, and the synthetic path.
+
 ## Mock YOLOv26 network sender
 
 ### Quick start

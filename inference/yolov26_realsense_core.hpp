@@ -111,6 +111,19 @@ public:
         return true;
     }
 
+    bool try_pop(FramePacket& packet)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        if (!pending_.has_value()) {
+            return false;
+        }
+
+        packet = std::move(*pending_);
+        pending_.reset();
+        return true;
+    }
+
     void stop()
     {
         {

@@ -1,0 +1,4 @@
+# #0007 HDMI real-capture timing bug: frame_start/acquire_end both taken after try_wait_for_frames so acquire_ms is always 0. frame_start must be captured immediately before the 100 ms wait and acquire_end right after success, both passed to infer_frame. [inference/live_yolov26_hdmi.cpp]
+
+- 2026-10-26T09:20:41Z `issue`: HDMI real-capture timing bug: frame_start/acquire_end both taken after try_wait_for_frames so acquire_ms is always 0. frame_start must be captured immediately before the 100 ms wait and acquire_end right after success, both passed to infer_frame. [inference/live_yolov26_hdmi.cpp] [inference/live_yolov26_hdmi.cpp]
+- 2026-10-26T09:25:41Z `fix`: HDMI acquire timing fixed and verified: frame_start before 100ms wait, acquire_end after success, infer_frame receives both; source-order regression test green.

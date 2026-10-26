@@ -19,7 +19,7 @@ Intel RealSense D455 RGB/depth capture and INT8 person/face detection on AMD/Xil
 - Python camera diagnostics: camera/camera_test.py, camera/depth_test.py, camera/aligned_depth_test.py.
 - Python browser previews: camera/live_stream.py (port 8080) and camera/live_rgb_depth.py (port 8080).
 - DenseBox: inference/densebox_realsense.cpp (local image diagnostic) and inference/live_densebox_realsense.cpp (MJPEG, port 8081).
-- YOLO: inference/live_yolov26_realsense.cpp (MJPEG, port 8081) and inference/live_yolov26_rpi.cpp (Pi video/status sender).
+- YOLO: inference/live_yolov26_realsense.cpp (MJPEG, port 8081), inference/live_yolov26_rpi.cpp (Pi video/status sender), and inference/live_yolov26_hdmi.cpp (fullscreen X11 display, synthetic --test-pattern mode).
 - Network-only integration: scripts/mock_yolov26_sender.py; native sender launcher scripts/run_live_yolov26_rpi.py.
 
 ## Structure
@@ -44,6 +44,9 @@ Intel RealSense D455 RGB/depth capture and INT8 person/face detection on AMD/Xil
   - `inference/yolov26_realsense_core.hpp` - camera, runner, frame handoff, calibration and monitor interfaces.
   - `inference/yolov26_realsense_core.cpp` - profiles, letterbox/INT8, VART execution, decode/depth, annotations, hwmon.
   - `inference/yolov26_rpi_control.hpp` and `inference/yolov26_rpi_control.cpp` - CLI validation, face-state freshness, report/backoff scheduling, telemetry.
+  - `inference/live_yolov26_hdmi.cpp` - YOLO local X11 display entry point, synthetic producer, real capture worker.
+  - `inference/yolov26_hdmi_control.hpp` and `inference/yolov26_hdmi_control.cpp` - dependency-free HDMI CLI validation and aspect-fit geometry.
+  - `inference/yolov26_hdmi_display.hpp` and `inference/yolov26_hdmi_display.cpp` - X11/OpenCV window adapter, black-canvas aspect-fit rendering, key/close exit.
   - `inference/yolov26_rpi_transport.hpp` and `inference/yolov26_rpi_transport.cpp` - host resolution, deadline-bounded Redis publishing and GStreamer encoder/video transport.
   - `inference/README.md` - native inference app overview, per-app build scripts, runtime/model requirements.
 - `scripts/` - standalone builds and network tools.
@@ -51,6 +54,8 @@ Intel RealSense D455 RGB/depth capture and INT8 person/face detection on AMD/Xil
   - `scripts/build_live_densebox.sh` - build live DenseBox, including dpu_task link.
   - `scripts/build_live_yolov26.sh` - build YOLO MJPEG with shared core.
   - `scripts/build_live_yolov26_rpi.sh` - build native sender with dependency/RealSense prefix checks.
+  - `scripts/build_live_yolov26_hdmi.sh` - build HDMI display app with RealSense prefix and OpenCV/X11 checks.
+  - `scripts/run_live_yolov26_hdmi.py` - HDMI launcher with offline --check-display/--wake-display X actions.
   - `scripts/run_live_yolov26_rpi.py` - prefix-aware native sender exec; imports mock dependency helpers.
   - `scripts/mock_yolov26_sender.py` - synthetic GStreamer video plus independent simulated face Redis publisher, no DPU/camera.
   - `scripts/README.md` - mock sender setup, wire contract and receiver coordination.
@@ -64,6 +69,9 @@ Intel RealSense D455 RGB/depth capture and INT8 person/face detection on AMD/Xil
   - `tests/test_live_yolov26_rpi.py` - unittest native-fixture compiler/runner and launcher tests.
   - `tests/test_yolov26_rpi_control.cpp` - hardware-independent native CLI/state/scheduler assertions.
   - `tests/test_yolov26_rpi_transport.cpp` - native Redis/encoder/transport fixtures, requires development libraries.
+  - `tests/test_live_yolov26_hdmi.py` - unittest HDMI launcher/build/control-fixture tests.
+  - `tests/test_yolov26_hdmi_control.cpp` - hardware-independent HDMI CLI/geometry assertions.
+  - `tests/test_yolov26_overlay_options.py` - extraction fixtures for browser CLI parsing and annotation drawing.
 - `.projectmem/` - project memory: authored map/intent plus tool-managed audit and derived context.
   - `.projectmem/AI_INSTRUCTIONS.md` - setup/maintenance and event logging rules.
   - `.projectmem/PROJECT_MAP.md` - authored project purpose, navigable path index, relationships, and setup constraints.
@@ -83,6 +91,9 @@ Intel RealSense D455 RGB/depth capture and INT8 person/face detection on AMD/Xil
 - `scripts/run_live_yolov26_rpi.py` imports dependency environment helpers from `scripts/mock_yolov26_sender.py` and execs the built `inference/live_yolov26_rpi` binary.
 - `tests/test_live_yolov26_rpi.py` imports `scripts/run_live_yolov26_rpi.py` and compiles/runs `tests/test_yolov26_rpi_control.cpp` and `tests/test_yolov26_rpi_transport.cpp` against native sources.
 - `tests/test_mock_yolov26_sender.py` imports `scripts/mock_yolov26_sender.py`.
+- `scripts/build_live_yolov26_hdmi.sh` compiles `inference/live_yolov26_hdmi.cpp` plus `inference/yolov26_realsense_core.cpp`, `inference/yolov26_hdmi_control.cpp`, and `inference/yolov26_hdmi_display.cpp`.
+- `inference/live_yolov26_hdmi.cpp` calls `inference/yolov26_hdmi_control.hpp`/`inference/yolov26_hdmi_control.cpp` for CLI/geometry and `inference/yolov26_hdmi_display.hpp`/`inference/yolov26_hdmi_display.cpp` for X11/HighGUI windowing; it shares `inference/yolov26_realsense_core` for inference and the now nonblocking-capable LatestFrameHandoff.
+- `tests/test_live_yolov26_hdmi.py` imports `scripts/run_live_yolov26_hdmi.py` and compiles/runs `tests/test_yolov26_hdmi_control.cpp` against `inference/yolov26_hdmi_control.cpp`.
 - projectmem MCP appends `.projectmem/events.jsonl` and regenerates `.projectmem/summary.md`; purpose is pulled from this authored `.projectmem/PROJECT_MAP.md`.
 
 ## Setup and validation
