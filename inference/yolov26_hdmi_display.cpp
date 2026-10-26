@@ -145,23 +145,26 @@ bool HdmiDisplay::show(const cv::Mat& image)
         canvas_height
     );
 
-    cv::Mat canvas(
-        canvas_height,
-        canvas_width,
-        image.type(),
-        cv::Scalar(0, 0, 0)
+    if (canvas_.empty()
+        || canvas_.cols != canvas_width
+        || canvas_.rows != canvas_height
+        || canvas_.type() != image.type()) {
+        canvas_.create(canvas_height, canvas_width, image.type());
+    }
+
+    canvas_.setTo(cv::Scalar(0, 0, 0));
+    cv::resize(image, resized_, cv::Size(fit.width, fit.height));
+    resized_.copyTo(
+        canvas_(cv::Rect(fit.x, fit.y, fit.width, fit.height))
     );
-    cv::Mat resized;
-    cv::resize(image, resized, cv::Size(fit.width, fit.height));
-    resized.copyTo(canvas(cv::Rect(fit.x, fit.y, fit.width, fit.height)));
-    cv::imshow(WINDOW_NAME, canvas);
+    cv::imshow(WINDOW_NAME, canvas_);
 
     return poll_key(cv::waitKey(1));
 }
 
 bool HdmiDisplay::poll()
 {
-    return poll_key(cv::waitKey(10));
+    return poll_key(cv::waitKey(1));
 }
 
 bool HdmiDisplay::poll_key(int key)
