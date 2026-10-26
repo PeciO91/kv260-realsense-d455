@@ -53,6 +53,7 @@ constexpr int SYSTEM_PANEL_HEIGHT = 128;
 struct Options : InferenceOptions {
     int port = DEFAULT_PORT;
     int jpeg_quality = DEFAULT_JPEG_QUALITY;
+    bool telemetry = false;
     bool list_profiles = false;
 };
 
@@ -82,6 +83,16 @@ void print_usage(const char* program)
         << " [--jpeg-quality N] [--port N]"
         << " [--depth-width N --depth-height N] [--list-profiles]"
         << " [--model PATH] [--confidence FLOAT] [--max-detections N]"
+        << " [--show-depth-roi true|false]"
+        << " [--show-confidence true|false]"
+        << " [--telemetry true|false]"
+        << std::endl
+        << "Defaults: confidence "
+        << DEFAULT_CONFIDENCE_THRESHOLD
+        << ", max-detections "
+        << DEFAULT_MAX_DETECTIONS
+        << ", show-depth-roi false, show-confidence true,"
+        << " telemetry false"
         << std::endl;
 }
 
@@ -140,6 +151,26 @@ float parse_float(
     }
 }
 
+bool parse_bool(
+    const char* option_name,
+    const char* value)
+{
+    if (std::strcmp(value, "true") == 0) {
+        return true;
+    }
+
+    if (std::strcmp(value, "false") == 0) {
+        return false;
+    }
+
+    throw std::invalid_argument(
+        std::string("Invalid value for ")
+        + option_name
+        + ": "
+        + value
+    );
+}
+
 Options parse_options(int argc, char* argv[])
 {
     Options options;
@@ -149,6 +180,9 @@ Options parse_options(int argc, char* argv[])
     constexpr int MODEL_OPTION = 1003;
     constexpr int CONFIDENCE_OPTION = 1004;
     constexpr int MAX_DETECTIONS_OPTION = 1005;
+    constexpr int SHOW_DEPTH_ROI_OPTION = 1006;
+    constexpr int SHOW_CONFIDENCE_OPTION = 1007;
+    constexpr int TELEMETRY_OPTION = 1008;
     const option long_options[] = {
         {"jpeg-quality", required_argument, nullptr, 'q'},
         {"port", required_argument, nullptr, 'p'},
@@ -159,6 +193,12 @@ Options parse_options(int argc, char* argv[])
         {"confidence", required_argument, nullptr, CONFIDENCE_OPTION},
         {"max-detections", required_argument, nullptr,
             MAX_DETECTIONS_OPTION},
+        {"show-depth-roi", required_argument, nullptr,
+            SHOW_DEPTH_ROI_OPTION},
+        {"show-confidence", required_argument, nullptr,
+            SHOW_CONFIDENCE_OPTION},
+        {"telemetry", required_argument, nullptr,
+            TELEMETRY_OPTION},
         {"help", no_argument, nullptr, HELP_OPTION},
         {nullptr, 0, nullptr, 0}
     };
@@ -229,6 +269,24 @@ Options parse_options(int argc, char* argv[])
                 optarg,
                 1,
                 std::numeric_limits<int>::max()
+            );
+            break;
+        case SHOW_DEPTH_ROI_OPTION:
+            options.show_depth_roi = parse_bool(
+                "--show-depth-roi",
+                optarg
+            );
+            break;
+        case SHOW_CONFIDENCE_OPTION:
+            options.show_confidence = parse_bool(
+                "--show-confidence",
+                optarg
+            );
+            break;
+        case TELEMETRY_OPTION:
+            options.telemetry = parse_bool(
+                "--telemetry",
+                optarg
             );
             break;
         case HELP_OPTION:
@@ -1125,7 +1183,10 @@ int main(int argc, char* argv[])
             renderer = std::thread([&]() {
                 try {
                     SystemMonitor system_monitor;
-                    system_monitor.update_if_due();
+
+                    if (options.telemetry) {
+                        system_monitor.update_if_due();
+                    }
                     std::vector<uchar> jpeg;
                     jpeg.reserve(
                         camera_configuration.color.width
@@ -1146,16 +1207,19 @@ int main(int argc, char* argv[])
                         const auto overlay_start = Clock::now();
                         draw_detection_annotations(
                             packet.image,
-                            packet.annotations
+                            packet.annotations,
+                            options
                         );
-                        system_monitor.update_if_due();
-                        const PerformanceStats displayed =
-                            performance_monitor.stats();
-                        draw_telemetry(
-                            packet.image,
-                            displayed,
-                            system_monitor.stats()
-                        );
+                        if (options.telemetry) {
+                            system_monitor.update_if_due();
+                            const PerformanceStats displayed =
+                                performance_monitor.stats();
+                            draw_telemetry(
+                                packet.image,
+                                displayed,
+                                system_monitor.stats()
+                            );
+                        }
                         const double overlay_ms = elapsed_ms(
                             overlay_start,
                             Clock::now()
@@ -1218,7 +1282,8 @@ int main(int argc, char* argv[])
                         );
                         PerformanceStats snapshot;
 
-                        if (performance_monitor.record_stream(
+                        if (options.telemetry
+                            && performance_monitor.record_stream(
                                 overlay_ms,
                                 jpeg_ms,
                                 send_ms,
@@ -1272,18 +1337,22 @@ int main(int argc, char* argv[])
                     ++sequence;
                     FramePacket packet = std::move(*inferred);
 
-                    performance_monitor.record_pipeline(
-                        packet.acquire_ms,
-                        packet.preprocess_ms,
-                        packet.dpu_ms,
-                        packet.depth_map_ms
-                    );
+                    if (options.telemetry) {
+                        performance_monitor.record_pipeline(
+                            packet.acquire_ms,
+                            packet.preprocess_ms,
+                            packet.dpu_ms,
+                            packet.depth_map_ms
+                        );
+                    }
 
                     const PublishResult result =
                         handoff.publish(std::move(packet));
 
                     if (result == PublishResult::replaced) {
-                        performance_monitor.record_drop();
+                        if (options.telemetry) {
+                            performance_monitor.record_drop();
+                        }
                     } else if (result == PublishResult::stopped) {
                         break;
                     }

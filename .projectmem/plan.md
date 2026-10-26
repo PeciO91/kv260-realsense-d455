@@ -20,3 +20,9 @@ _Queued, but not started._
 
 ## Shipped
 _Move completed plans here so the top stays about the future._
+
+- [x] YOLO display/default tuning: confidence default 0.30, max-detections
+  default 50, `--show-depth-roi` / `--show-confidence` on browser + Pi,
+  browser `--telemetry true|false` gating monitor polling/overlay/logs.
+  Verified by native control fixture plus host extraction fixtures
+  (`tests/test_yolov26_overlay_options.py`); board build not run on host.

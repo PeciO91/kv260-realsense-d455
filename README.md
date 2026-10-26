@@ -133,10 +133,16 @@ containing the xmodel or pass an explicit path:
 
 - `--model PATH`: xmodel file (default
   `yolov26n_facehuman_kria.xmodel`).
-- `--confidence FLOAT`: detection confidence in `[0, 1]` (default 0.1).
+- `--confidence FLOAT`: detection confidence in `[0, 1]` (default 0.30).
   Thresholding happens in quantized INT8 logit space.
-- `--max-detections N`: positive cap on reported boxes (default 300).
+- `--max-detections N`: positive cap on reported boxes (default 50).
   Detections are sorted by score and truncated; no NMS is applied.
+- `--show-depth-roi true|false`: draw the blue depth sampling ROI
+  rectangle inside each box (default false).
+- `--show-confidence true|false`: include the numeric score in box
+  labels (default true).
+- `--telemetry true|false`: draw the performance/system overlay and log
+  terminal telemetry (default false).
 
 All existing live-stream options (`--port`, `--jpeg-quality`, `--depth-width`,
 `--depth-height`, `--list-profiles`) work unchanged.
@@ -161,7 +167,8 @@ inference, and depth mapping, while a renderer thread owns annotation
 drawing, JPEG encoding, and MJPEG sending. A bounded latest-frame handoff
 with queue capacity 1 sits between them: publishing onto an occupied
 slot replaces the pending frame, which avoids latency buildup when the
-renderer falls behind. Terminal telemetry reports independent pipeline
+renderer falls behind. With `--telemetry true`, terminal telemetry
+reports independent pipeline
 and stream FPS, per-stage timings for `acquire`, `preprocess`, `dpu`,
 `depth_postprocess`, `overlay`, `jpeg`, and `send`, cumulative dropped
 frames plus per-window drop rate, and true end-to-end latency from frame
@@ -379,7 +386,9 @@ minimum 0.1), `--face-stale-seconds` (default 2.0, minimum ~1 ns),
 `--duration-seconds` (optional; all second-valued options are capped at
 630720000 s), `--telemetry true|false` (explicit value required,
 default false), plus the shared inference options `--model`,
-`--confidence` `[0,1]`, `--max-detections` (default 300),
+`--confidence` `[0,1]` (default 0.30), `--max-detections` (default 50),
+`--show-depth-roi true|false` (default false),
+`--show-confidence true|false` (default true),
 `--depth-width`, `--depth-height`, `--list-profiles`.
 
 Behaviour notes:

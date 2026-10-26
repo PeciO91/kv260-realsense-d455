@@ -687,7 +687,8 @@ int main(int argc, char* argv[])
                         const auto overlay_start = Clock::now();
                         draw_detection_annotations(
                             packet.image,
-                            packet.annotations
+                            packet.annotations,
+                            inference
                         );
 
                         if (options.telemetry) {

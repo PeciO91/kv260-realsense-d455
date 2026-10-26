@@ -163,7 +163,8 @@ float median_depth_in_color_roi(
 
 void draw_detection_annotations(
     cv::Mat& image,
-    const std::vector<DetectionAnnotation>& annotations);
+    const std::vector<DetectionAnnotation>& annotations,
+    const InferenceOptions& options);
 
 class SystemMonitor {
 public:

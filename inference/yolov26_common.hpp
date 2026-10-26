@@ -22,8 +22,8 @@ static_assert(
 constexpr double TELEMETRY_INTERVAL_SECONDS = 1.0;
 constexpr const char* DEFAULT_MODEL_PATH =
     "yolov26n_facehuman_kria.xmodel";
-constexpr float DEFAULT_CONFIDENCE_THRESHOLD = 0.1f;
-constexpr int DEFAULT_MAX_DETECTIONS = 300;
+constexpr float DEFAULT_CONFIDENCE_THRESHOLD = 0.30f;
+constexpr int DEFAULT_MAX_DETECTIONS = 50;
 constexpr int NUM_CLASSES = 2;
 constexpr int REG_MAX = 1;
 constexpr std::array<int, 3> STRIDES = {8, 16, 32};
@@ -49,6 +49,8 @@ struct InferenceOptions {
     std::string model_path = DEFAULT_MODEL_PATH;
     float confidence_threshold = DEFAULT_CONFIDENCE_THRESHOLD;
     int max_detections = DEFAULT_MAX_DETECTIONS;
+    bool show_depth_roi = false;
+    bool show_confidence = true;
 };
 
 struct Detection {

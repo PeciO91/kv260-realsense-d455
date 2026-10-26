@@ -175,6 +175,21 @@ int parse_int(
     return static_cast<int>(value);
 }
 
+bool parse_bool(const char* name, const std::string& text)
+{
+    if (text == "true") {
+        return true;
+    }
+
+    if (text == "false") {
+        return false;
+    }
+
+    throw std::invalid_argument(
+        std::string(name) + " must be true or false"
+    );
+}
+
 double parse_seconds(
     const char* name,
     const std::string& text,
@@ -290,6 +305,12 @@ void print_sender_usage(const char* argv0)
         << std::endl
         << "  --depth-height HEIGHT     Depth stream height"
         << std::endl
+        << "  --show-depth-roi true|false  Draw the depth"
+        << " sampling ROI" << std::endl
+        << "                            (default false)" << std::endl
+        << "  --show-confidence true|false  Include the score in"
+        << " box labels" << std::endl
+        << "                            (default true)" << std::endl
         << "  --telemetry true|false    Enable metrics"
         << " (default false)" << std::endl
         << "  --list-profiles           List supported camera"
@@ -436,18 +457,21 @@ ParseResult parse_sender_options(int argc, char* argv[])
                 1,
                 4096
             );
+        } else if (argument == "--show-depth-roi") {
+            options.inference.show_depth_roi = parse_bool(
+                "--show-depth-roi",
+                require_value("--show-depth-roi")
+            );
+        } else if (argument == "--show-confidence") {
+            options.inference.show_confidence = parse_bool(
+                "--show-confidence",
+                require_value("--show-confidence")
+            );
         } else if (argument == "--telemetry") {
-            const std::string value =
-                require_value("--telemetry");
-            if (value == "true") {
-                options.telemetry = true;
-            } else if (value == "false") {
-                options.telemetry = false;
-            } else {
-                throw std::invalid_argument(
-                    "--telemetry must be true or false"
-                );
-            }
+            options.telemetry = parse_bool(
+                "--telemetry",
+                require_value("--telemetry")
+            );
         } else if (argument == "--list-profiles") {
             options.list_profiles = true;
         } else if (argument == "--help" || argument == "-h") {

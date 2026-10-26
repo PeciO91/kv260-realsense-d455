@@ -1021,7 +1021,8 @@ float median_depth_in_color_roi(
 
 void draw_detection_annotations(
     cv::Mat& image,
-    const std::vector<DetectionAnnotation>& annotations)
+    const std::vector<DetectionAnnotation>& annotations,
+    const InferenceOptions& options)
 {
     for (const DetectionAnnotation& detection : annotations) {
         const cv::Scalar box_color =
@@ -1041,25 +1042,27 @@ void draw_detection_annotations(
             2
         );
 
-        cv::rectangle(
-            image,
-            cv::Point(
-                std::max(0, detection.depth_x1),
-                std::max(0, detection.depth_y1)
-            ),
-            cv::Point(
-                std::min(
-                    image.cols - 1,
-                    detection.depth_x2
+        if (options.show_depth_roi) {
+            cv::rectangle(
+                image,
+                cv::Point(
+                    std::max(0, detection.depth_x1),
+                    std::max(0, detection.depth_y1)
                 ),
-                std::min(
-                    image.rows - 1,
-                    detection.depth_y2
-                )
-            ),
-            cv::Scalar(255, 0, 0),
-            1
-        );
+                cv::Point(
+                    std::min(
+                        image.cols - 1,
+                        detection.depth_x2
+                    ),
+                    std::min(
+                        image.rows - 1,
+                        detection.depth_y2
+                    )
+                ),
+                cv::Scalar(255, 0, 0),
+                1
+            );
+        }
 
         char label[128];
         const char* class_name =
@@ -1069,22 +1072,41 @@ void draw_detection_annotations(
                 : "Unknown";
 
         if (detection.distance > 0.0f) {
-            std::snprintf(
-                label,
-                sizeof(label),
-                "%s %.2f | %.2f m",
-                class_name,
-                detection.score,
-                detection.distance
-            );
+            if (options.show_confidence) {
+                std::snprintf(
+                    label,
+                    sizeof(label),
+                    "%s %.2f | %.2f m",
+                    class_name,
+                    detection.score,
+                    detection.distance
+                );
+            } else {
+                std::snprintf(
+                    label,
+                    sizeof(label),
+                    "%s | %.2f m",
+                    class_name,
+                    detection.distance
+                );
+            }
         } else {
-            std::snprintf(
-                label,
-                sizeof(label),
-                "%s %.2f | N/A",
-                class_name,
-                detection.score
-            );
+            if (options.show_confidence) {
+                std::snprintf(
+                    label,
+                    sizeof(label),
+                    "%s %.2f | N/A",
+                    class_name,
+                    detection.score
+                );
+            } else {
+                std::snprintf(
+                    label,
+                    sizeof(label),
+                    "%s | N/A",
+                    class_name
+                );
+            }
         }
 
         cv::putText(

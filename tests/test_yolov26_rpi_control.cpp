@@ -277,11 +277,15 @@ void test_parsing()
     check(o.inference.depth_width == 1280
           && o.inference.depth_height == 720,
           "depth pair stored");
-    check(o.inference.confidence_threshold
-              == DEFAULT_CONFIDENCE_THRESHOLD,
-          "confidence default");
-    check(o.inference.max_detections == 300,
-          "max detections default");
+    check(std::fabs(o.inference.confidence_threshold - 0.30)
+              < 1e-4,
+          "confidence default 0.30");
+    check(o.inference.max_detections == 50,
+          "max detections default 50");
+    check(!o.inference.show_depth_roi,
+          "show depth roi default off");
+    check(o.inference.show_confidence,
+          "show confidence default on");
     check(o.inference.model_path
           == "yolov26n_facehuman_kria.xmodel",
           "model default");
@@ -300,6 +304,47 @@ void test_parsing()
     check(parse_fails({"app", "--pi-host", "h",
                        "--telemetry", "yes"}),
           "--telemetry yes rejected");
+
+    check(parse_ok({"app", "--pi-host", "h",
+                    "--confidence", "0.25"}, o),
+          "confidence 0.25 accepted");
+    check(std::fabs(o.inference.confidence_threshold - 0.25)
+              < 1e-4,
+          "confidence 0.25 stored");
+
+    check(parse_ok({"app", "--pi-host", "h",
+                    "--show-depth-roi", "true"}, o),
+          "show-depth-roi true accepted");
+    check(o.inference.show_depth_roi,
+          "show depth roi enabled");
+    check(parse_ok({"app", "--pi-host", "h",
+                    "--show-depth-roi", "false"}, o),
+          "show-depth-roi false accepted");
+    check(!o.inference.show_depth_roi,
+          "show depth roi stays off");
+    check(parse_fails({"app", "--pi-host", "h",
+                       "--show-depth-roi"}),
+          "bare --show-depth-roi rejected");
+    check(parse_fails({"app", "--pi-host", "h",
+                       "--show-depth-roi", "yes"}),
+          "--show-depth-roi yes rejected");
+
+    check(parse_ok({"app", "--pi-host", "h",
+                    "--show-confidence", "false"}, o),
+          "show-confidence false accepted");
+    check(!o.inference.show_confidence,
+          "show confidence disabled");
+    check(parse_ok({"app", "--pi-host", "h",
+                    "--show-confidence", "true"}, o),
+          "show-confidence true accepted");
+    check(o.inference.show_confidence,
+          "show confidence stays on");
+    check(parse_fails({"app", "--pi-host", "h",
+                       "--show-confidence"}),
+          "bare --show-confidence rejected");
+    check(parse_fails({"app", "--pi-host", "h",
+                       "--show-confidence", "1"}),
+          "--show-confidence 1 rejected");
     check(parse_fails({"app", "--pi-host", "h",
                        "--no-telemetry"}),
           "old --no-telemetry rejected");
