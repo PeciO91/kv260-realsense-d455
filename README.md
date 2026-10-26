@@ -198,8 +198,12 @@ defaults to `DISPLAY=:0` (`--display` overrides), preserves the supplied
 `--` are validated and run by the native binary.
 
 Display options: `--display NAME` (default `:0`), `--fullscreen
-true|false` (default true), `--telemetry true|false` (default false),
-`--duration-seconds SECONDS` (positive finite; with `--test-pattern`
+true|false` (default true), `--telemetry true|false` (default false —
+when enabled the overlay and a once-per-second `[telemetry]` line show
+output FPS, per-interval mean acquire/preprocess/DPU/depth timings and
+host end-to-end latency mean/max measured from frame acquisition to
+display submission), `--duration-seconds SECONDS` (positive finite; with
+`--test-pattern`
 the default is 10 s, otherwise the app runs until stopped). All shared
 inference options (`--model`, `--confidence` default 0.30,
 `--max-detections` default 50, `--depth-width`/`--depth-height`,

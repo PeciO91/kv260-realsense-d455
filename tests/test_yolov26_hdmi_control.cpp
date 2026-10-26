@@ -288,12 +288,51 @@ void test_fit_image()
     }
 }
 
+void test_display_telemetry()
+{
+    const auto t0 = Clock::now();
+    DisplayTelemetry telemetry;
+
+    check(!telemetry.snapshot_if_due(
+              t0 + std::chrono::milliseconds(500)),
+          "no snapshot before interval");
+
+    telemetry.record(10.0, 20.0, 30.0, 5.0, 100.0);
+    telemetry.record(20.0, 40.0, 50.0, 15.0, 300.0);
+
+    const auto due = telemetry.snapshot_if_due(
+        t0 + std::chrono::milliseconds(1200));
+    check(due.has_value(), "snapshot due after interval");
+    check(due->submissions == 2, "two submissions counted");
+    check(std::fabs(due->fps - 2.0 / 1.2) < 0.01,
+          "fps from windowed count");
+    check(std::fabs(due->acquire_ms - 15.0) < 1e-9,
+          "acquire mean");
+    check(std::fabs(due->preprocess_ms - 30.0) < 1e-9,
+          "preprocess mean");
+    check(std::fabs(due->dpu_ms - 40.0) < 1e-9,
+          "dpu mean");
+    check(std::fabs(due->depth_ms - 10.0) < 1e-9,
+          "depth mean");
+    check(std::fabs(due->e2e_mean_ms - 200.0) < 1e-9,
+          "e2e mean");
+    check(std::fabs(due->e2e_max_ms - 300.0) < 1e-9,
+          "e2e max");
+
+    const auto next = telemetry.snapshot_if_due(
+        t0 + std::chrono::milliseconds(2500));
+    check(next.has_value(), "second window due");
+    check(next->submissions == 0, "counters reset");
+    check(next->e2e_max_ms == 0.0, "e2e max reset");
+}
+
 }
 
 int main()
 {
     test_parsing();
     test_fit_image();
+    test_display_telemetry();
 
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

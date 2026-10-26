@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <optional>
 #include <string>
 
 #include "yolov26_common.hpp"
@@ -42,6 +44,37 @@ FittedImage fit_image(
     int src_height,
     int dst_width,
     int dst_height);
+
+struct TelemetrySnapshot {
+    uint64_t submissions = 0;
+    double window_seconds = 0.0;
+    double fps = 0.0;
+    double acquire_ms = 0.0;
+    double preprocess_ms = 0.0;
+    double dpu_ms = 0.0;
+    double depth_ms = 0.0;
+    double e2e_mean_ms = 0.0;
+    double e2e_max_ms = 0.0;
+};
+
+class DisplayTelemetry {
+public:
+    void record(
+        double acquire_ms,
+        double preprocess_ms,
+        double dpu_ms,
+        double depth_ms,
+        double e2e_ms);
+
+    std::optional<TelemetrySnapshot> snapshot_if_due(
+        Clock::time_point now);
+
+private:
+    Clock::time_point start_ = Clock::now();
+    uint64_t submissions_ = 0;
+    std::array<double, 5> sums_{};
+    double e2e_max_ = 0.0;
+};
 
 }
 }

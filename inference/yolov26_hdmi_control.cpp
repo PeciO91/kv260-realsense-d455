@@ -304,5 +304,53 @@ FittedImage fit_image(
     return fit;
 }
 
+void DisplayTelemetry::record(
+    double acquire_ms,
+    double preprocess_ms,
+    double dpu_ms,
+    double depth_ms,
+    double e2e_ms)
+{
+    ++submissions_;
+    sums_[0] += acquire_ms;
+    sums_[1] += preprocess_ms;
+    sums_[2] += dpu_ms;
+    sums_[3] += depth_ms;
+    sums_[4] += e2e_ms;
+    if (e2e_ms > e2e_max_) {
+        e2e_max_ = e2e_ms;
+    }
+}
+
+std::optional<TelemetrySnapshot> DisplayTelemetry::snapshot_if_due(
+    Clock::time_point now)
+{
+    const double seconds =
+        std::chrono::duration<double>(now - start_).count();
+    if (seconds < TELEMETRY_INTERVAL_SECONDS) {
+        return std::nullopt;
+    }
+
+    TelemetrySnapshot result;
+    result.submissions = submissions_;
+    result.window_seconds = seconds;
+    result.fps = static_cast<double>(submissions_) / seconds;
+    if (submissions_ > 0) {
+        const double n = static_cast<double>(submissions_);
+        result.acquire_ms = sums_[0] / n;
+        result.preprocess_ms = sums_[1] / n;
+        result.dpu_ms = sums_[2] / n;
+        result.depth_ms = sums_[3] / n;
+        result.e2e_mean_ms = sums_[4] / n;
+    }
+    result.e2e_max_ms = e2e_max_;
+
+    submissions_ = 0;
+    sums_.fill(0.0);
+    e2e_max_ = 0.0;
+    start_ = now;
+    return result;
+}
+
 }
 }

@@ -144,8 +144,7 @@ cv::Mat make_test_frame(
 void draw_hdmi_telemetry(
     cv::Mat& image,
     const SystemStats& system,
-    double gui_submissions_per_second,
-    const FramePacket* last_packet)
+    const TelemetrySnapshot* last_snapshot)
 {
     char text[128];
     int y = 20;
@@ -163,31 +162,40 @@ void draw_hdmi_telemetry(
         y += 15;
     };
 
-    std::snprintf(
-        text,
-        sizeof(text),
-        "GUI submissions: %.1f/s",
-        gui_submissions_per_second
-    );
-    line(text);
-
-    if (last_packet) {
+    if (last_snapshot && last_snapshot->submissions > 0) {
         std::snprintf(
             text,
             sizeof(text),
-            "acquire %.1f ms  preprocess %.1f ms",
-            last_packet->acquire_ms,
-            last_packet->preprocess_ms
+            "output %.1f FPS",
+            last_snapshot->fps
+        );
+        line(text);
+        std::snprintf(
+            text,
+            sizeof(text),
+            "acq %.1f ms  prep %.1f ms",
+            last_snapshot->acquire_ms,
+            last_snapshot->preprocess_ms
         );
         line(text);
         std::snprintf(
             text,
             sizeof(text),
             "dpu %.1f ms  depth %.1f ms",
-            last_packet->dpu_ms,
-            last_packet->depth_map_ms
+            last_snapshot->dpu_ms,
+            last_snapshot->depth_ms
         );
         line(text);
+        std::snprintf(
+            text,
+            sizeof(text),
+            "e2e %.1f ms mean  %.1f ms max",
+            last_snapshot->e2e_mean_ms,
+            last_snapshot->e2e_max_ms
+        );
+        line(text);
+    } else {
+        line("metrics: warming up");
     }
 
     if (system.cpu_available) {
@@ -586,9 +594,8 @@ int main(int argc, char* argv[])
 
         const auto display_start = Clock::now();
         SystemMonitor system_monitor;
-        uint64_t submissions = 0;
-        auto telemetry_window_start = Clock::now();
-        double gui_submissions_per_second = 0.0;
+        DisplayTelemetry telemetry;
+        std::optional<TelemetrySnapshot> last_snapshot;
         FramePacket packet;
 
         while (running.load() && !g_signal_fired) {
@@ -611,74 +618,87 @@ int main(int argc, char* argv[])
                     draw_hdmi_telemetry(
                         packet.image,
                         system_monitor.stats(),
-                        gui_submissions_per_second,
-                        options.test_pattern
-                            ? nullptr
-                            : &packet
+                        last_snapshot
+                            ? &*last_snapshot
+                            : nullptr
                     );
                 }
 
+                const auto submit_start = Clock::now();
                 if (!display.show(packet.image)) {
                     break;
                 }
-                ++submissions;
 
                 const auto now = Clock::now();
-                const double elapsed =
-                    std::chrono::duration<double>(
-                        now - telemetry_window_start
-                    ).count();
+                const double e2e_ms = elapsed_ms(
+                    packet.frame_start,
+                    now
+                );
 
-                if (options.telemetry
-                    && elapsed >= TELEMETRY_INTERVAL_SECONDS) {
-                    gui_submissions_per_second =
-                        static_cast<double>(submissions)
-                            / elapsed;
+                if (options.telemetry) {
+                    telemetry.record(
+                        packet.acquire_ms,
+                        packet.preprocess_ms,
+                        packet.dpu_ms,
+                        packet.depth_map_ms,
+                        e2e_ms
+                    );
 
-                    std::ostringstream line;
-                    line
-                        << "[telemetry] GUI submissions="
-                        << gui_submissions_per_second
-                        << "/s";
+                    std::optional<TelemetrySnapshot> due =
+                        telemetry.snapshot_if_due(now);
 
-                    if (!options.test_pattern) {
+                    if (due) {
+                        last_snapshot = *due;
+
+                        std::ostringstream line;
                         line
-                            << " acquire="
-                            << packet.acquire_ms
-                            << " ms preprocess="
-                            << packet.preprocess_ms
-                            << " ms dpu="
-                            << packet.dpu_ms
-                            << " ms depth="
-                            << packet.depth_map_ms
+                            << "[telemetry] fps="
+                            << due->fps
+                            << " e2e_mean="
+                            << due->e2e_mean_ms
+                            << " ms e2e_max="
+                            << due->e2e_max_ms
                             << " ms";
-                    }
 
-                    const SystemStats& system =
-                        system_monitor.stats();
+                        if (!options.test_pattern) {
+                            line
+                                << " acquire="
+                                << due->acquire_ms
+                                << " ms preprocess="
+                                << due->preprocess_ms
+                                << " ms dpu="
+                                << due->dpu_ms
+                                << " ms depth="
+                                << due->depth_ms
+                                << " ms";
+                        }
 
-                    if (system.cpu_available) {
-                        line << " cpu=" << system.cpu_percent << "%";
-                    }
-                    if (system.ram_available) {
-                        line
-                            << " ram="
-                            << system.ram_used_mb
-                            << "/"
-                            << system.ram_total_mb
-                            << " MB";
-                    }
-                    if (system.temperature_available) {
-                        line
-                            << " temp="
-                            << system.temperature_c
-                            << " C";
-                    }
+                        const SystemStats& system =
+                            system_monitor.stats();
 
-                    std::cout << line.str() << std::endl;
+                        if (system.cpu_available) {
+                            line
+                                << " cpu="
+                                << system.cpu_percent
+                                << "%";
+                        }
+                        if (system.ram_available) {
+                            line
+                                << " ram="
+                                << system.ram_used_mb
+                                << "/"
+                                << system.ram_total_mb
+                                << " MB";
+                        }
+                        if (system.temperature_available) {
+                            line
+                                << " temp="
+                                << system.temperature_c
+                                << " C";
+                        }
 
-                    submissions = 0;
-                    telemetry_window_start = now;
+                        std::cout << line.str() << std::endl;
+                    }
                 }
                 continue;
             }
