@@ -43,8 +43,8 @@ KmsDisplay::KmsDisplay(bool fullscreen)
 {
     try {
         open_card();
-        setup_crtc();
         select_overlay_plane();
+        setup_crtc();
         setup_terminal();
     } catch (...) {
         teardown();
@@ -124,8 +124,104 @@ void KmsDisplay::open_card()
     }
 }
 
+uint32_t find_prop_id(
+    int fd,
+    uint32_t object_id,
+    uint32_t object_type,
+    const char* name)
+{
+    uint32_t prop_id = 0;
+    drmModeObjectProperties* props =
+        drmModeObjectGetProperties(fd, object_id, object_type);
+    if (!props) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < props->count_props; ++i) {
+        drmModePropertyRes* prop =
+            drmModeGetProperty(fd, props->props[i]);
+        if (prop) {
+            if (std::strcmp(prop->name, name) == 0) {
+                prop_id = prop->prop_id;
+            }
+            drmModeFreeProperty(prop);
+        }
+        if (prop_id) {
+            break;
+        }
+    }
+    drmModeFreeObjectProperties(props);
+    return prop_id;
+}
+
 void KmsDisplay::setup_crtc()
 {
+    uint32_t mode_blob = 0;
+    drmModeCreatePropertyBlob(
+        fd_, &mode_, sizeof(mode_), &mode_blob
+    );
+
+    bool video_only = false;
+    if (mode_blob) {
+        const uint32_t conn_crtc = find_prop_id(
+            fd_, connector_id_, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID"
+        );
+        const uint32_t crtc_mode = find_prop_id(
+            fd_, crtc_id_, DRM_MODE_OBJECT_CRTC, "MODE_ID"
+        );
+        const uint32_t crtc_active = find_prop_id(
+            fd_, crtc_id_, DRM_MODE_OBJECT_CRTC, "ACTIVE"
+        );
+
+        drmModeAtomicReq* req = drmModeAtomicAlloc();
+        drmModeAtomicAddProperty(req, connector_id_, conn_crtc, crtc_id_);
+        drmModeAtomicAddProperty(req, crtc_id_, crtc_mode, mode_blob);
+        drmModeAtomicAddProperty(req, crtc_id_, crtc_active, 1);
+
+        int rc = drmModeAtomicCommit(
+            fd_,
+            req,
+            DRM_MODE_ATOMIC_TEST_ONLY
+                | DRM_MODE_ATOMIC_ALLOW_MODESET,
+            nullptr
+        );
+        if (rc == 0) {
+            rc = drmModeAtomicCommit(
+                fd_,
+                req,
+                DRM_MODE_ATOMIC_ALLOW_MODESET,
+                nullptr
+            );
+        }
+        drmModeAtomicFree(req);
+        drmModeDestroyPropertyBlob(fd_, mode_blob);
+        video_only = rc == 0;
+    }
+
+    if (video_only) {
+        for (uint32_t id = 30; id < 70; ++id) {
+            if (id == plane_id_) {
+                continue;
+            }
+            drmModePlane* stale = drmModeGetPlane(fd_, id);
+            if (stale) {
+                if (stale->crtc_id == crtc_id_) {
+                    drmModeSetPlane(
+                        fd_, id, crtc_id_, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0
+                    );
+                }
+                drmModeFreePlane(stale);
+            }
+        }
+        return;
+    }
+
+    std::fprintf(
+        stderr,
+        "[kms] video-only CRTC rejected;"
+        " using primary plane with software scaling\n"
+    );
+    primary_blit_ = true;
     create_dumb(
         primary_fb_,
         screen_width_,
@@ -404,6 +500,39 @@ bool KmsDisplay::show(const cv::Mat& image)
 {
     if (!window_open_ || image.empty()) {
         return false;
+    }
+
+    if (primary_blit_) {
+        const FittedImage fit = fullscreen_
+            ? fit_image(
+                image.cols,
+                image.rows,
+                screen_width_,
+                screen_height_)
+            : FittedImage{
+                image.cols,
+                image.rows,
+                (screen_width_ - image.cols) / 2,
+                (screen_height_ - image.rows) / 2};
+
+        cv::Mat fb_view(
+            screen_height_,
+            screen_width_,
+            CV_8UC2,
+            primary_fb_.map,
+            primary_fb_.pitch
+        );
+        fb_view.setTo(0);
+
+        cv::Mat resized;
+        cv::resize(image, resized, cv::Size(fit.width, fit.height));
+        cv::Mat roi = fb_view(
+            cv::Rect(fit.x, fit.y, fit.width, fit.height)
+        );
+        cv::cvtColor(resized, roi, cv::COLOR_BGR2BGR565);
+
+        poll_keys();
+        return window_open_;
     }
 
     if (!ensure_frame_buffers(image.cols, image.rows)) {

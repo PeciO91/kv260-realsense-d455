@@ -55,6 +55,7 @@ private:
     bool fullscreen_;
     bool window_open_ = true;
     bool hw_scaling_ = true;
+    bool primary_blit_ = false;
     int screen_width_ = 0;
     int screen_height_ = 0;
     uint32_t crtc_id_ = 0;
