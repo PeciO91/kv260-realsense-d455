@@ -198,19 +198,62 @@ void KmsDisplay::setup_crtc()
     }
 
     if (video_only) {
+        const uint32_t crtc_mask = 1u << crtc_index_;
+        uint32_t primary_plane = 0;
         for (uint32_t id = 30; id < 70; ++id) {
             if (id == plane_id_) {
                 continue;
             }
-            drmModePlane* stale = drmModeGetPlane(fd_, id);
-            if (stale) {
-                if (stale->crtc_id == crtc_id_) {
-                    drmModeSetPlane(
-                        fd_, id, crtc_id_, 0, 0,
-                        0, 0, 0, 0, 0, 0, 0, 0
-                    );
+            drmModePlane* plane = drmModeGetPlane(fd_, id);
+            if (plane) {
+                if (!primary_plane
+                    && (plane->possible_crtcs & crtc_mask)) {
+                    primary_plane = id;
                 }
-                drmModeFreePlane(stale);
+                drmModeFreePlane(plane);
+            }
+        }
+
+        if (primary_plane) {
+            create_dumb(
+                primary_fb_,
+                screen_width_,
+                screen_height_,
+                32,
+                DRM_FORMAT_ARGB8888
+            );
+            std::memset(primary_fb_.map, 0, primary_fb_.size);
+
+            drmModeSetCrtc(
+                fd_,
+                crtc_id_,
+                primary_fb_.fb_id,
+                0,
+                0,
+                &connector_id_,
+                1,
+                &mode_
+            );
+
+            const uint32_t alpha_prop = find_prop_id(
+                fd_, primary_plane,
+                DRM_MODE_OBJECT_PLANE, "alpha"
+            );
+            if (alpha_prop) {
+                drmModeObjectSetProperty(
+                    fd_, primary_plane,
+                    DRM_MODE_OBJECT_PLANE, alpha_prop, 0
+                );
+            }
+            const uint32_t galpha_prop = find_prop_id(
+                fd_, primary_plane,
+                DRM_MODE_OBJECT_PLANE, "g_alpha_en"
+            );
+            if (galpha_prop) {
+                drmModeObjectSetProperty(
+                    fd_, primary_plane,
+                    DRM_MODE_OBJECT_PLANE, galpha_prop, 0
+                );
             }
         }
         return;
