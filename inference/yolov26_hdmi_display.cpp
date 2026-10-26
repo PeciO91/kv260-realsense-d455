@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include <X11/Xlib.h>
+#include <gtk/gtk.h>
 #include <opencv2/highgui/highgui_c.h>
 
 namespace yolov26 {
@@ -88,6 +89,22 @@ HdmiDisplay::HdmiDisplay(
             + "': HighGUI window handle is null"
         );
     }
+
+    GtkCssProvider* provider = gtk_css_provider_new();
+    if (provider) {
+        gtk_css_provider_load_from_data(
+            provider,
+            "* { background-color: black; }",
+            -1,
+            nullptr
+        );
+        gtk_style_context_add_provider_for_screen(
+            gdk_screen_get_default(),
+            GTK_STYLE_PROVIDER(provider),
+            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
+        );
+        g_object_unref(provider);
+    }
 }
 
 HdmiDisplay::~HdmiDisplay()
@@ -118,46 +135,27 @@ bool HdmiDisplay::show(const cv::Mat& image)
         return false;
     }
 
-    int canvas_width = screen_width_;
-    int canvas_height = screen_height_;
+    if (fullscreen_) {
+        const FittedImage fit = fit_image(
+            image.cols,
+            image.rows,
+            screen_width_,
+            screen_height_
+        );
 
-    if (!fullscreen_) {
-        try {
-            const cv::Rect area =
-                cv::getWindowImageRect(WINDOW_NAME);
-            if (area.width > 0 && area.height > 0) {
-                canvas_width = area.width;
-                canvas_height = area.height;
-            }
-        } catch (...) {
+        if (fit.width == image.cols && fit.height == image.rows) {
+            cv::imshow(WINDOW_NAME, image);
+        } else {
+            cv::resize(
+                image,
+                scaled_,
+                cv::Size(fit.width, fit.height)
+            );
+            cv::imshow(WINDOW_NAME, scaled_);
         }
+    } else {
+        cv::imshow(WINDOW_NAME, image);
     }
-
-    if (canvas_width <= 0 || canvas_height <= 0) {
-        canvas_width = image.cols;
-        canvas_height = image.rows;
-    }
-
-    const FittedImage fit = fit_image(
-        image.cols,
-        image.rows,
-        canvas_width,
-        canvas_height
-    );
-
-    if (canvas_.empty()
-        || canvas_.cols != canvas_width
-        || canvas_.rows != canvas_height
-        || canvas_.type() != image.type()) {
-        canvas_.create(canvas_height, canvas_width, image.type());
-    }
-
-    canvas_.setTo(cv::Scalar(0, 0, 0));
-    cv::resize(image, resized_, cv::Size(fit.width, fit.height));
-    resized_.copyTo(
-        canvas_(cv::Rect(fit.x, fit.y, fit.width, fit.height))
-    );
-    cv::imshow(WINDOW_NAME, canvas_);
 
     return poll_key(cv::waitKey(1));
 }

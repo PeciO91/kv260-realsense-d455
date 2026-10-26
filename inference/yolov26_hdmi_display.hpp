@@ -33,8 +33,7 @@ private:
     int screen_width_ = 0;
     int screen_height_ = 0;
     bool window_open_ = true;
-    cv::Mat canvas_;
-    cv::Mat resized_;
+    cv::Mat scaled_;
 };
 
 }
