@@ -46,7 +46,7 @@ if [ -z "$RS_LIBDIR" ]; then
 fi
 
 MISSING=""
-for module in opencv4 x11 gtk+-3.0; do
+for module in opencv4 x11 gtk+-3.0 libdrm; do
     if ! pkg-config --exists "$module"; then
         MISSING="$MISSING $module"
     fi
@@ -68,11 +68,12 @@ g++ \
     inference/yolov26_realsense_core.cpp \
     inference/yolov26_hdmi_control.cpp \
     inference/yolov26_hdmi_display.cpp \
+    inference/yolov26_kms_display.cpp \
     -I inference \
     -I"${RS_PREFIX}/include" \
     -L"${RS_LIBDIR}" \
     -Wl,-rpath,"${RS_LIBDIR}" \
-    $(pkg-config --cflags --libs opencv4 x11 gtk+-3.0) \
+    $(pkg-config --cflags --libs opencv4 x11 gtk+-3.0 libdrm) \
     -lrealsense2 \
     -lvart-runner \
     -lxir \

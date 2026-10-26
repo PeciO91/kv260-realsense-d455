@@ -4,26 +4,27 @@
 
 #include <opencv2/opencv.hpp>
 
+#include "yolov26_display.hpp"
 #include "yolov26_hdmi_control.hpp"
 
 namespace yolov26 {
 namespace hdmi {
 
-class HdmiDisplay {
+class HdmiDisplay : public Display {
 public:
     HdmiDisplay(
         const std::string& display_name,
         bool fullscreen);
-    ~HdmiDisplay();
+    ~HdmiDisplay() override;
 
     HdmiDisplay(const HdmiDisplay&) = delete;
     HdmiDisplay& operator=(const HdmiDisplay&) = delete;
 
-    int target_width() const;
-    int target_height() const;
+    int target_width() const override;
+    int target_height() const override;
 
-    bool show(const cv::Mat& image);
-    bool poll();
+    bool show(const cv::Mat& image) override;
+    bool poll() override;
 
 private:
     bool poll_key(int key);

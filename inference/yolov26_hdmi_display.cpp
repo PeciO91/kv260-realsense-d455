@@ -35,7 +35,7 @@ HdmiDisplay::HdmiDisplay(
     bool fullscreen)
     : fullscreen_(fullscreen)
 {
-    Display* display = XOpenDisplay(display_name.c_str());
+    ::Display* display = XOpenDisplay(display_name.c_str());
 
     if (!display) {
         throw std::runtime_error(
@@ -115,7 +115,7 @@ HdmiDisplay::~HdmiDisplay()
     }
 
     if (display_) {
-        XCloseDisplay(static_cast<Display*>(display_));
+        XCloseDisplay(static_cast<::Display*>(display_));
     }
 }
 

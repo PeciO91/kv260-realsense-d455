@@ -106,6 +106,8 @@ void print_usage(const char* argv0)
         << " X desktop." << std::endl
         << std::endl
         << "Options:" << std::endl
+        << "  --renderer x11|kms        Display backend"
+        << " (default x11; kms needs Xorg stopped)" << std::endl
         << "  --display NAME            X display"
         << " (default " << DEFAULT_DISPLAY << ")" << std::endl
         << "  --fullscreen true|false   Fullscreen window"
@@ -171,6 +173,14 @@ ParseResult parse_options(int argc, char* argv[])
             if (options.display.empty()) {
                 throw std::invalid_argument(
                     "--display must not be empty"
+                );
+            }
+        } else if (argument == "--renderer") {
+            options.renderer = require_value("--renderer");
+            if (options.renderer != "x11"
+                && options.renderer != "kms") {
+                throw std::invalid_argument(
+                    "--renderer must be x11 or kms"
                 );
             }
         } else if (argument == "--fullscreen") {

@@ -16,6 +16,7 @@ constexpr double MAX_DURATION_SECONDS = 630720000.0;
 struct Options {
     InferenceOptions inference;
     std::string display = DEFAULT_DISPLAY;
+    std::string renderer = "x11";
     bool fullscreen = true;
     bool telemetry = false;
     bool test_pattern = false;

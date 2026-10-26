@@ -8,6 +8,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -23,6 +24,7 @@
 #include "yolov26_realsense_core.hpp"
 #include "yolov26_hdmi_control.hpp"
 #include "yolov26_hdmi_display.hpp"
+#include "yolov26_kms_display.hpp"
 
 using namespace yolov26;
 using namespace yolov26::hdmi;
@@ -306,12 +308,23 @@ int main(int argc, char* argv[])
 
         install_signal_handlers();
 
-        HdmiDisplay display(options.display, options.fullscreen);
+        std::unique_ptr<Display> display;
+        if (options.renderer == "kms") {
+            display.reset(new KmsDisplay(options.fullscreen));
+        } else {
+            display.reset(new HdmiDisplay(
+                options.display,
+                options.fullscreen
+            ));
+        }
 
         std::cout
-            << "Display: " << options.display << " "
-            << display.target_width() << "x"
-            << display.target_height()
+            << "Display: "
+            << (options.renderer == "kms"
+                ? "kms"
+                : options.display.c_str())
+            << " " << display->target_width() << "x"
+            << display->target_height()
             << (options.fullscreen ? " fullscreen" : " windowed")
             << std::endl;
 
@@ -625,7 +638,7 @@ int main(int argc, char* argv[])
                 }
 
                 const auto submit_start = Clock::now();
-                if (!display.show(packet.image)) {
+                if (!display->show(packet.image)) {
                     break;
                 }
 
@@ -703,7 +716,7 @@ int main(int argc, char* argv[])
                 continue;
             }
 
-            if (!display.poll()) {
+            if (!display->poll()) {
                 break;
             }
         }
