@@ -8,7 +8,7 @@ host latency while using a third of the CPU.
 
 The main engineering result is the fullscreen 1920x1080 display path. Measured on
 the board, it went from **8.7 FPS / 172 ms / 77 % CPU** to **29.5 FPS / 45 ms / 33 % CPU**
-in six measured steps, by finding and removing one bottleneck at a time
+in five measured steps, by finding and removing one bottleneck at a time
 ([details below](#performance-optimisation-at-1920x1080)).
 
 | | Start (X11, letterbox canvas) | End (DRM/KMS, word-level nearest) | Change |
@@ -22,7 +22,7 @@ in six measured steps, by finding and removing one bottleneck at a time
 - [Hardware](#hardware) · [Repository layout](#repository-layout) · [Workflow](#workflow)
 - [Architecture](#architecture) · [Output modes](#output-modes)
 - [Performance optimisation at 1920x1080](#performance-optimisation-at-1920x1080)
-- [Other findings](#other-findings) · [Earlier work](#earlier-work) · [Tests](#tests) · [Limitations](#limitations)
+- [Earlier work](#earlier-work) · [Tests](#tests)
 
 ## Hardware
 
@@ -125,17 +125,43 @@ RealSense D455 ─ USB3 ─ librealsense (RSUSB)
             output thread: annotate →  MJPEG │ H.264/RTP + Redis │ HDMI X11 │ HDMI KMS
 ```
 
-Design points:
+### Design choices
 
-- **Two threads with a capacity-1 handoff.** Capture + DPU + depth never wait for the display.
-  If the output is slower, the pending frame is replaced, so latency stays bounded and the
-  cost appears as dropped frames, not a growing queue.
-- **Direct VART.** The app loads the xmodel through XIR/VART `RunnerExt`, validates the
-  tensor contract at startup, and does preprocessing and decoding itself.
-- **No NMS.** The one2one YOLOv26 head produces non-duplicated boxes, so decoding is
-  just thresholding and sorting.
-- **One core, several outputs.** All modes share `inference/yolov26/core`; each mode adds
-  only its own delivery code.
+**Distance from a 5x5 grid, not from an aligned depth frame.** Every box needs one
+number: how far away it is. The obvious way is to align the whole depth frame to the colour
+frame (`rs2::align`) and read the box region, but that reprojects every depth pixel on the
+A53 cores, every frame, to answer a question about ~25 pixels. The first live DenseBox app
+did this and fell below the camera rate; replacing it with sparse mapping restored full
+frame-rate throughput (commit `29043a5`). Now, for each detection:
+
+1. Take the central 35 % of the box, which stays on the person or face and away from the
+   background at the box edges.
+2. Place a 5x5 grid of 25 points on it, in colour-image coordinates.
+3. Map each point into the raw depth image with `rs2_project_color_pixel_to_depth_pixel`,
+   which uses the camera's calibrated intrinsics and extrinsics.
+4. Drop invalid readings (zero or out of range, 0.1 – 10 m) and take the **median**, so a few
+   holes or background pixels cannot pull the distance.
+
+Per box this is 25 projections and a selection over a fixed 25-element array, with no
+per-frame allocation, instead of a full-frame warp. It is also why depth can be the small
+424x240 stream.
+
+**Two threads and a capacity-1 handoff.** Capture, DPU and depth never wait for the
+display. The two sides are joined by a queue that holds exactly one frame, and a newer
+frame replaces a pending one. If the output is slower than the camera, the cost shows up as
+a dropped frame, not as a growing queue, so latency stays bounded instead of drifting up.
+
+**Direct VART, own pre/post-processing.** The app loads the xmodel through XIR/VART
+`RunnerExt` and validates the tensor contract at startup (pairing box and class tensors by
+spatial shape, not by name or order). Letterboxing and INT8 quantization use a cached
+256-entry lookup table, and decoding is plain thresholding and sorting.
+
+**No NMS.** YOLOv26's one2one head produces non-duplicated boxes, so non-maximum
+suppression is not needed.
+
+**One core, several outputs.** All modes share `inference/yolov26/core`; each mode adds
+only its own delivery code behind a small interface, which is how the display backends
+(X11, KMS) could be swapped and measured against each other.
 
 ## Output modes
 
@@ -157,23 +183,24 @@ frame, ≈ 90 FPS capacity), camera profile (848x480@30) and telemetry, measured
 **Latency is host pipeline latency** (frame request → handed to the display), not
 glass-to-glass. Method, caveats and raw logs: [`docs/performance/`](docs/performance/README.md).
 
+Step numbers match the log files in `docs/performance/1080p/`.
+
+**Fullscreen 1080p display path**
+
 | # | Step | FPS | Latency mean (ms) | CPU % | Notes |
 |---|------|----:|------------------:|------:|-------|
-| 0 | MJPEG to a browser (reference, no local display) | 29.6 | 51.6 | 36 | camera-limited |
 | 1 | X11, new 1920x1080 canvas every frame, then resize + copy | 8.7 | 172.4 | 77 | **display-bound** |
 | 2 | + reuse the canvas, `waitKey(1)` | 9.7 | 162.3 | 79 | no real change |
-| 3 | X11, `imshow` the 848x480 frame as-is (native-size window) | 29.4 | 50.1 | 52 | fast, but not fullscreen |
 | 4 | X11, aspect-fit upscale to 1080p | 9.7 | 159.7 | 77 | display-bound again |
 | 5 | KMS, software bilinear scale into the scan-out buffer | 29.2 | 78.2 | 65 | camera-rate, high latency |
 | 6 | KMS, nearest-neighbour at 16/32-bit word level | **29.5** | **45.3** | **33** | **final** |
 
-```mermaid
-xychart-beta
-    title "Host latency by step (ms, lower is better)"
-    x-axis ["0 MJPEG", "1 canvas", "2 reuse", "3 native", "4 upscale", "5 KMS bilinear", "6 KMS nearest"]
-    y-axis "ms" 0 --> 200
-    bar [51.6, 172.4, 162.3, 50.1, 159.7, 78.2, 45.3]
-```
+**Reference points, not fullscreen output** (used to explain the results, not part of the progression)
+
+| # | Run | FPS | Latency mean (ms) | CPU % | What it tells us |
+|---|-----|----:|------------------:|------:|------------------|
+| 0 | MJPEG stream to a browser | 29.6 | 51.6 | 36 | the pipeline itself runs at camera rate, with no local display |
+| 3 | X11, 848x480 frame shown as-is in a native-size window | 29.4 | 50.1 | 52 | with 5× fewer pixels, X11 also keeps up, so cost follows the pixels pushed |
 
 ### What was the bottleneck, and what we did
 
@@ -184,15 +211,13 @@ into it and pushed it to the X server. That version has no per-stage display tim
 this is inferred from the frame budget. Reusing the canvas and polling faster (step 2)
 changed FPS by ~1 and CPU not at all: **allocation was not the cost.**
 
-**Step 3: payload size.** Showing the 848x480 frame (1.2 MB) directly, with no canvas, resize
-or copy, restored 29.4 FPS and halved CPU. So the cost scales with the pixels pushed
-through OpenCV's GTK/`XPutImage` path. But OpenCV 4.5.2's GTK backend draws at natural size,
-so this is a small window, not a fullscreen picture.
-
-**Step 4: fullscreen brings it back.** Scaling to 1920x1080 on the A53 and sending 6.2 MB per
-frame through X returned to 9.7 FPS. The same code reached ~30 FPS earlier only because
-the monitor was in a 1024x768 mode, where the upscaled frame was 1024x580 (3.5× fewer pixels). **At 1080p, X11 cannot reach camera rate here.**
-This is why the earlier results had to be re-measured at 1080p.
+**Step 4: the cost is the pixels, not the code around them.** Reference run 3 shows the same
+X11 path handles the 848x480 frame (1.2 MB) at camera rate. OpenCV 4.5.2's GTK backend does not
+scale to the window, so a fullscreen picture needs our own upscale, and sending 6.2 MB per
+frame through X on the A53 brings back 9.7 FPS. An earlier ~30 FPS result for this upscale was
+measured with the monitor in a 1024x768 mode, where the upscaled frame was only 1024x580
+(3.5× fewer pixels), which is why those numbers had to be re-measured at 1080p. **At
+1080p, X11 cannot reach camera rate on this board.**
 
 **Dead end: hardware scaling.** The first KMS attempt assumed the DisplayPort subsystem's video
 layer would scale 848x480 to 1080p. It showed a black screen: the ZynqMP DPSUB has **no
@@ -208,8 +233,29 @@ the A53 (`show` = 30.0 ms), which keeps CPU at 65 % and latency at 78 ms.
 **Step 6: cheaper scaling.** Convert the frame to the scan-out pixel format at native
 size (848x480), then upscale by nearest-neighbour copying whole 16/32-bit words. `show`
 dropped 30.0 → 7.1 ms, CPU 65 → 33 %, latency 78 → 45 ms. It is now **camera-limited and
-as cheap as the browser stream** (33 % vs 36 % CPU; 45 ms vs 52 ms, measured to different end points: display hand-over vs completed send). Nearest-neighbour is blockier than
+as cheap as the browser stream** (33 % vs 36 % CPU; 45 ms vs 52 ms, measured to different
+end points: display hand-over vs completed send). Nearest-neighbour is blockier than
 bilinear; `--kms-scaling linear` keeps the smoother option.
+
+### Why latency dropped but FPS barely moved (steps 5 → 6)
+
+FPS and latency measure different things. **FPS is throughput**: it is set by the slowest
+*repeating* stage, and here that is the camera, which delivers a frame every 33 ms. **Latency
+is the time one frame spends travelling through the pipeline**: it is the *sum* of
+everything that frame goes through, including time spent waiting.
+
+In step 5 the display thread needed ~30 ms to show a frame, still below the 33 ms frame
+period, so it just kept up: 29.2 FPS, the camera limit. But every frame paid for it, and
+it often arrived while the display was still busy with the previous one, so it also sat in
+the handoff (`wait` 12.8 ms). Step 6 shrank the display work from 30.0 to 7.1 ms (−22.9 ms)
+and the wait from 12.8 to 3.0 ms (−9.8 ms): together −32.7 ms, which is the whole
+78.2 → 45.3 ms drop in latency. The camera still produced one frame per 33 ms, so FPS stayed
+essentially where it was (29.2 → 29.5).
+
+An assembly-line analogy: making the last station faster shortens the time a part takes to
+get through the line, but not how many parts leave per minute, because the first station
+still sets the pace. What the faster display bought instead was **headroom**: CPU load fell
+from 65 % to 33 %, and the display no longer limits frame rate even if load rises.
 
 **Where the time goes now (step 6, per frame):** the capture thread spends 18.6 ms on
 preprocessing (CPU letterbox + quantize), 11.1 ms in the DPU and ~4 ms acquiring, about 34 ms
@@ -217,19 +263,6 @@ in total against the camera's 33 ms frame period. The display side (3.0 ms wait,
 7.1 ms show) runs on the other thread and has headroom. So the camera and the capture thread
 are now the limit, and the largest remaining cost is CPU preprocessing, not the DPU. Going
 beyond 30 FPS (the D455 offers 848x480@60) would first need faster preprocessing.
-
-## Other findings
-
-- **Detection flicker came from quantization, not the display.** In a 45 s stationary test, the
-  class-head outputs have coarse fixed-point scales (0.25 logit steps at stride 8, 1.0 at
-  strides 16/32), so person scores sit on a few discrete levels (0.731 / 0.500 / 0.269) and a
-  0.30 threshold acts like 0.5. Lowering the threshold to 0.25 raised person presence from 66 %
-  to 97 % of frames and cut flips from 272 to 50, with no extra false boxes. Face dropouts are
-  real model misses. Options: lower the threshold, add temporal hysteresis, or re-quantize the
-  class heads.
-- **Sparse depth instead of alignment.** Mapping 25 points per detection avoids aligning every
-  depth frame to colour.
-- **RSUSB backend** avoids the kernel Oops on pipeline stop.
 
 ## Earlier work
 
@@ -248,12 +281,3 @@ Host-side tests cover option parsing, geometry, frame composition, scheduling, l
 build scripts and the Pi wire contract against fixtures: 110 tests, 2 skipped on a PC without
 the board's libraries ([`tests/README.md`](tests/README.md)). Camera, DPU and monitor
 behaviour is verified manually on the board.
-
-## Limitations
-
-- Compiled models are not included, and training/quantization tooling is outside this repo.
-- Latency is host pipeline latency, not camera-to-photon.
-- The 1080p study is one board, one run per step, an uncontrolled scene.
-- KMS mode needs exclusive DRM access, so the X desktop must be stopped.
-- The Pi video receiver and Redis server are maintained outside this repository; Redis has no
-  AUTH/TLS and must be on a private network.
