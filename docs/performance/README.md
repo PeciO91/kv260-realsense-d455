@@ -29,18 +29,22 @@ One log per step in [`1080p/`](1080p).
 
 | Step | Log | Commit | Command |
 |------|-----|--------|---------|
-| 0 | `step0_mjpeg_baseline.txt` | `83cb6ca` | `live_yolov26_realsense --telemetry true` + curl client |
+| ref A | `ref_mjpeg_browser.txt` | `83cb6ca` | `live_yolov26_realsense --telemetry true` + curl client |
+| ref B | `ref_x11_native_window.txt` | `3d19d4f` | `live_yolov26_hdmi --fullscreen false` (native-size window) |
 | 1 | `step1_x11_canvas.txt` | `d5aa59f` | `live_yolov26_hdmi --fullscreen true` |
 | 2 | `step2_x11_canvas_reuse.txt` | `4413082` | `live_yolov26_hdmi --fullscreen true` |
-| 3 | `step3_x11_direct_native.txt` | `3d19d4f` | `live_yolov26_hdmi --fullscreen false` (native-size window) |
-| 4 | `step4_x11_fit_upscale.txt` | `3d19d4f` | `live_yolov26_hdmi --fullscreen true` |
-| 5 | `step5_kms_linear.txt` | `83cb6ca` | `live_yolov26_hdmi --renderer kms --kms-scaling linear` |
-| 6 | `step6_kms_nearest.txt` | `83cb6ca` | `live_yolov26_hdmi --renderer kms` |
+| 3 | `step3_x11_fit_upscale.txt` | `3d19d4f` | `live_yolov26_hdmi --fullscreen true` |
+| 4 | `step4_kms_linear.txt` | `83cb6ca` | `live_yolov26_hdmi --renderer kms --kms-scaling linear` |
+| 5 | `step5_kms_nearest.txt` | `83cb6ca` | `live_yolov26_hdmi --renderer kms` |
+
+Steps 1-5 are the optimisation progression at fullscreen 1080p. The two `ref_` runs are
+reference points: the pipeline without a local display (A) and X11 showing the native-size
+frame (B).
 
 Reproduce the table:
 
 ```sh
-python3 scripts/summarize_telemetry.py docs/performance/1080p/step*.txt
+python3 scripts/summarize_telemetry.py docs/performance/1080p/*.txt
 ```
 
 ## Caveats

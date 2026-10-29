@@ -183,14 +183,12 @@ frame, ≈ 90 FPS capacity), camera profile (848x480@30) and telemetry, measured
 **Latency is host pipeline latency** (frame request → handed to the display), not
 glass-to-glass. Method, caveats and raw logs: [`docs/performance/`](docs/performance/README.md).
 
-Step numbers match the log files in `docs/performance/1080p/`.
-
 **Reference points** (not fullscreen output; they show what the pipeline can do)
 
-| # | Run | FPS | Latency (ms) | CPU % | What it tells us |
+| Ref | Run | FPS | Latency (ms) | CPU % | What it tells us |
 |---|-----|----:|-------------:|------:|------------------|
-| 0 | MJPEG stream to a browser | 29.6 | 51.6 | 36 | the pipeline itself runs at camera rate |
-| 3 | X11, 848x480 frame in a native-size window | 29.4 | 50.1 | 52 | X11 keeps up when it pushes 5× fewer pixels |
+| A | MJPEG stream to a browser | 29.6 | 51.6 | 36 | the pipeline itself runs at camera rate |
+| B | X11, 848x480 frame in a native-size window | 29.4 | 50.1 | 52 | X11 keeps up when it pushes 5× fewer pixels |
 
 **Optimisation steps: fullscreen 1080p display**
 
@@ -198,9 +196,9 @@ Step numbers match the log files in `docs/performance/1080p/`.
 |---|------|----:|-------------:|------:|
 | 1 | X11, new 1920x1080 canvas every frame, then resize + copy | 8.7 | 172.4 | 77 |
 | 2 | + reuse the canvas, `waitKey(1)` | 9.7 | 162.3 | 79 |
-| 4 | X11, aspect-fit upscale to 1080p | 9.7 | 159.7 | 77 |
-| 5 | KMS, bilinear scaling in software | 29.2 | 78.2 | 65 |
-| 6 | KMS, nearest-neighbour at 16/32-bit word level | **29.5** | **45.3** | **33** |
+| 3 | X11, aspect-fit upscale to 1080p | 9.7 | 159.7 | 77 |
+| 4 | KMS, bilinear scaling in software | 29.2 | 78.2 | 65 |
+| 5 | KMS, nearest-neighbour at 16/32-bit word level | **29.5** | **45.3** | **33** |
 
 ### Bottleneck and steps
 
@@ -208,40 +206,32 @@ Step numbers match the log files in `docs/performance/1080p/`.
   preprocessing + DPU + depth take only ~37 ms. The rest is the GUI loop pushing a fresh
   6.2 MB canvas to X every frame. Reusing the canvas changed nothing, so allocation was
   not the cost.
-- **4, it is the pixels.** Reference 3 shows the same X11 path keeps up with a 1.2 MB frame,
+- **3, it is the pixels.** Reference B shows the same X11 path keeps up with a 1.2 MB frame,
   and OpenCV's GTK backend cannot scale to fullscreen, so we upscale ourselves and are back
   to 9.7 FPS. An earlier ~30 FPS result was measured at 1024x768 (3.5× fewer pixels), so the
   numbers were re-measured at 1080p. X11 cannot reach camera rate here.
 - **Dead end, hardware scaling.** The ZynqMP display has no scaler (both layers must share one
   source size), so the first KMS attempt showed a black screen. The fix was full-mode-size
   buffers with scaling in software.
-- **5, drop X.** Writing straight into DRM buffers reaches camera rate, but the software
+- **4, drop X.** Writing straight into DRM buffers reaches camera rate, but the software
   bilinear resize costs ~30 ms per frame on the A53 (65 % CPU, 78 ms).
-- **6, cheaper scaling.** Convert at native size, then upscale by copying whole 16/32-bit
+- **5, cheaper scaling.** Convert at native size, then upscale by copying whole 16/32-bit
   words (nearest-neighbour): display time 30.0 → 7.1 ms, CPU 65 → 33 %, latency 78 → 45 ms.
   `--kms-scaling linear` keeps the smoother option.
 
-### Why latency dropped but FPS barely moved (steps 5 → 6)
+### Why latency dropped but FPS barely moved (steps 4 → 5)
 
-FPS and latency measure different things. **FPS is throughput**: it is set by the slowest
-*repeating* stage, and here that is the camera, which delivers a frame every 33 ms. **Latency
-is the time one frame spends travelling through the pipeline**: it is the *sum* of
-everything that frame goes through, including time spent waiting.
+FPS is throughput, set by the slowest repeating stage: the camera, one frame every 33 ms.
+Latency is the sum of everything one frame goes through, including time spent waiting.
 
-In step 5 the display thread needed ~30 ms to show a frame, still below the 33 ms frame
-period, so it just kept up: 29.2 FPS, the camera limit. But every frame paid for it, and
-it often arrived while the display was still busy with the previous one, so it also sat in
-the handoff (`wait` 12.8 ms). Step 6 shrank the display work from 30.0 to 7.1 ms (−22.9 ms)
-and the wait from 12.8 to 3.0 ms (−9.8 ms): together −32.7 ms, which is the whole
-78.2 → 45.3 ms drop in latency. The camera still produced one frame per 33 ms, so FPS stayed
-essentially where it was (29.2 → 29.5).
+In step 4 the display needed ~30 ms per frame, just under the 33 ms frame period, so it kept
+up (29.2 FPS) but every frame paid that 30 ms, plus 12.8 ms waiting in the handoff for the
+busy display. Step 5 cut display time to 7.1 ms (−22.9 ms) and the wait to 3.0 ms (−9.8 ms).
+That is −32.7 ms, the whole 78.2 → 45.3 ms drop. The camera still delivered a frame every
+33 ms, so FPS stayed at 29.2 → 29.5. The faster display instead bought headroom: CPU fell
+from 65 % to 33 %.
 
-An assembly-line analogy: making the last station faster shortens the time a part takes to
-get through the line, but not how many parts leave per minute, because the first station
-still sets the pace. What the faster display bought instead was **headroom**: CPU load fell
-from 65 % to 33 %, and the display no longer limits frame rate even if load rises.
-
-**Where the time goes now (step 6, per frame):** the capture thread spends 18.6 ms on
+**Where the time goes now (step 5, per frame):** the capture thread spends 18.6 ms on
 preprocessing (CPU letterbox + quantize), 11.1 ms in the DPU and ~4 ms acquiring, about 34 ms
 in total against the camera's 33 ms frame period. The display side (3.0 ms wait, 1.4 ms draw,
 7.1 ms show) runs on the other thread and has headroom. So the camera and the capture thread
