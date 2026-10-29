@@ -107,6 +107,19 @@ void test_parsing()
           "kms plane before renderer accepted");
     check(o.kms_plane == "overlay",
           "kms plane order independent");
+    check(o.kms_scaling == "nearest", "kms scaling default nearest");
+    check(parse_ok({"app", "--renderer", "kms",
+                    "--kms-scaling", "linear"}, o),
+          "kms linear scaling accepted");
+    check(o.kms_scaling == "linear", "kms linear scaling stored");
+    check(parse_ok({"app", "--kms-scaling", "nearest",
+                    "--renderer", "kms"}, o),
+          "kms scaling before renderer accepted");
+    check(parse_fails({"app", "--renderer", "kms",
+                       "--kms-scaling", "cubic"}),
+          "invalid kms scaling rejected");
+    check(parse_fails({"app", "--kms-scaling", "linear"}),
+          "kms scaling rejected with x11 renderer");
     check(parse_fails({"app", "--renderer", "kms",
                        "--kms-plane", "cursor"}),
           "invalid kms plane rejected");
@@ -325,8 +338,8 @@ void test_display_telemetry()
               t0 + std::chrono::milliseconds(500)),
           "no snapshot before interval");
 
-    telemetry.record(10.0, 20.0, 30.0, 5.0, 100.0);
-    telemetry.record(20.0, 40.0, 50.0, 15.0, 300.0);
+    telemetry.record(10.0, 20.0, 30.0, 5.0, 100.0, 2.0, 4.0, 6.0);
+    telemetry.record(20.0, 40.0, 50.0, 15.0, 300.0, 4.0, 8.0, 18.0);
 
     const auto due = telemetry.snapshot_if_due(
         t0 + std::chrono::milliseconds(1200));
@@ -344,6 +357,9 @@ void test_display_telemetry()
           "depth mean");
     check(std::fabs(due->e2e_mean_ms - 200.0) < 1e-9,
           "e2e mean");
+    check(std::fabs(due->wait_ms - 3.0) < 1e-9, "wait mean");
+    check(std::fabs(due->draw_ms - 6.0) < 1e-9, "draw mean");
+    check(std::fabs(due->show_ms - 12.0) < 1e-9, "show mean");
     check(std::fabs(due->e2e_max_ms - 300.0) < 1e-9,
           "e2e max");
 
@@ -352,6 +368,7 @@ void test_display_telemetry()
     check(next.has_value(), "second window due");
     check(next->submissions == 0, "counters reset");
     check(next->e2e_max_ms == 0.0, "e2e max reset");
+    check(next->show_ms == 0.0, "show reset");
 }
 
 }

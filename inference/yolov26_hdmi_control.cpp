@@ -110,6 +110,8 @@ void print_usage(const char* argv0)
         << " (default x11; kms needs Xorg stopped)" << std::endl
         << "  --kms-plane primary|overlay  KMS output plane"
         << " (default primary; kms only)" << std::endl
+        << "  --kms-scaling nearest|linear  KMS fullscreen resize"
+        << " (default nearest; kms only)" << std::endl
         << "  --display NAME            X display"
         << " (default " << DEFAULT_DISPLAY << ")" << std::endl
         << "  --fullscreen true|false   Fullscreen window"
@@ -158,6 +160,7 @@ ParseResult parse_options(int argc, char* argv[])
     ParseResult result;
     Options& options = result.options;
     bool kms_plane_set = false;
+    bool kms_scaling_set = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string argument(argv[i]);
@@ -195,6 +198,15 @@ ParseResult parse_options(int argc, char* argv[])
                 );
             }
             kms_plane_set = true;
+        } else if (argument == "--kms-scaling") {
+            options.kms_scaling = require_value("--kms-scaling");
+            if (options.kms_scaling != "nearest"
+                && options.kms_scaling != "linear") {
+                throw std::invalid_argument(
+                    "--kms-scaling must be nearest or linear"
+                );
+            }
+            kms_scaling_set = true;
         } else if (argument == "--fullscreen") {
             options.fullscreen = parse_bool(
                 "--fullscreen",
@@ -279,6 +291,11 @@ ParseResult parse_options(int argc, char* argv[])
             "--kms-plane requires --renderer kms"
         );
     }
+    if (kms_scaling_set && options.renderer != "kms") {
+        throw std::invalid_argument(
+            "--kms-scaling requires --renderer kms"
+        );
+    }
 
     if ((options.inference.depth_width == 0)
         != (options.inference.depth_height == 0)) {
@@ -337,7 +354,10 @@ void DisplayTelemetry::record(
     double preprocess_ms,
     double dpu_ms,
     double depth_ms,
-    double e2e_ms)
+    double e2e_ms,
+    double wait_ms,
+    double draw_ms,
+    double show_ms)
 {
     ++submissions_;
     sums_[0] += acquire_ms;
@@ -345,6 +365,9 @@ void DisplayTelemetry::record(
     sums_[2] += dpu_ms;
     sums_[3] += depth_ms;
     sums_[4] += e2e_ms;
+    sums_[5] += wait_ms;
+    sums_[6] += draw_ms;
+    sums_[7] += show_ms;
     if (e2e_ms > e2e_max_) {
         e2e_max_ = e2e_ms;
     }
@@ -370,6 +393,9 @@ std::optional<TelemetrySnapshot> DisplayTelemetry::snapshot_if_due(
         result.dpu_ms = sums_[2] / n;
         result.depth_ms = sums_[3] / n;
         result.e2e_mean_ms = sums_[4] / n;
+        result.wait_ms = sums_[5] / n;
+        result.draw_ms = sums_[6] / n;
+        result.show_ms = sums_[7] / n;
     }
     result.e2e_max_ms = e2e_max_;
 

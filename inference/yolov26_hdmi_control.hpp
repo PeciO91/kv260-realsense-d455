@@ -18,6 +18,7 @@ struct Options {
     std::string display = DEFAULT_DISPLAY;
     std::string renderer = "x11";
     std::string kms_plane = "primary";
+    std::string kms_scaling = "nearest";
     bool fullscreen = true;
     bool telemetry = false;
     bool test_pattern = false;
@@ -57,6 +58,9 @@ struct TelemetrySnapshot {
     double depth_ms = 0.0;
     double e2e_mean_ms = 0.0;
     double e2e_max_ms = 0.0;
+    double wait_ms = 0.0;
+    double draw_ms = 0.0;
+    double show_ms = 0.0;
 };
 
 class DisplayTelemetry {
@@ -66,7 +70,10 @@ public:
         double preprocess_ms,
         double dpu_ms,
         double depth_ms,
-        double e2e_ms);
+        double e2e_ms,
+        double wait_ms,
+        double draw_ms,
+        double show_ms);
 
     std::optional<TelemetrySnapshot> snapshot_if_due(
         Clock::time_point now);
@@ -74,7 +81,7 @@ public:
 private:
     Clock::time_point start_ = Clock::now();
     uint64_t submissions_ = 0;
-    std::array<double, 5> sums_{};
+    std::array<double, 8> sums_{};
     double e2e_max_ = 0.0;
 };
 

@@ -169,7 +169,8 @@ cv::Rect compose_kms_frame(
     const cv::Mat& image,
     cv::Mat& destination,
     bool fullscreen,
-    cv::Mat& resize_scratch)
+    cv::Mat& scratch,
+    KmsScaling scaling)
 {
     if (image.empty() || image.type() != CV_8UC3) {
         throw std::invalid_argument(
@@ -193,35 +194,61 @@ cv::Rect compose_kms_frame(
         fullscreen
     );
 
-    const cv::Mat* source = &image;
-    if (rect.width != image.cols || rect.height != image.rows) {
+    const bool packed16 = destination.type() == CV_8UC2;
+    const int code =
+        packed16 ? cv::COLOR_BGR2BGR565 : cv::COLOR_BGR2BGRA;
+    cv::Mat roi = destination(rect);
+
+    if (rect.width == image.cols && rect.height == image.rows) {
+        cv::cvtColor(image, roi, code);
+    } else if (scaling == KmsScaling::Linear) {
         cv::resize(
             image,
-            resize_scratch,
+            scratch,
             rect.size(),
             0,
             0,
             cv::INTER_LINEAR
         );
-        source = &resize_scratch;
+        cv::cvtColor(scratch, roi, code);
+    } else {
+        cv::cvtColor(image, scratch, code);
+        const int word_type = packed16 ? CV_16UC1 : CV_32SC1;
+        const cv::Mat source_words(
+            scratch.rows,
+            scratch.cols,
+            word_type,
+            scratch.data,
+            scratch.step
+        );
+        cv::Mat roi_words(
+            roi.rows,
+            roi.cols,
+            word_type,
+            roi.data,
+            roi.step
+        );
+        cv::resize(
+            source_words,
+            roi_words,
+            roi.size(),
+            0,
+            0,
+            cv::INTER_NEAREST
+        );
     }
-
-    cv::Mat roi = destination(rect);
-    cv::cvtColor(
-        *source,
-        roi,
-        destination.type() == CV_8UC4
-            ? cv::COLOR_BGR2BGRA
-            : cv::COLOR_BGR2BGR565
-    );
     return rect;
 }
 
 } // namespace detail
 
-KmsDisplay::KmsDisplay(bool fullscreen, KmsPlane plane)
+KmsDisplay::KmsDisplay(
+    bool fullscreen,
+    KmsPlane plane,
+    KmsScaling scaling)
     : fullscreen_(fullscreen)
     , plane_(plane)
+    , scaling_(scaling)
 {
     try {
         open_card();
@@ -543,7 +570,8 @@ void KmsDisplay::setup_crtc()
     std::fprintf(
         stderr,
         "[kms] %s plane=%u crtc=%u connector=%u mode=%dx%d"
-        " graphics_plane=%u overlay_plane=%u fb_pitch=%u\n",
+        " graphics_plane=%u overlay_plane=%u fb_pitch=%u"
+        " scaling=%s\n",
         plane_ == KmsPlane::Overlay ? "overlay" : "primary",
         present_plane_id_,
         crtc_id_,
@@ -552,7 +580,8 @@ void KmsDisplay::setup_crtc()
         screen_height_,
         primary_plane_id_,
         overlay_plane_id_,
-        frame_fbs_[0].pitch
+        frame_fbs_[0].pitch,
+        scaling_ == KmsScaling::Linear ? "linear" : "nearest"
     );
 }
 
@@ -750,7 +779,9 @@ bool KmsDisplay::show(const cv::Mat& image)
         fb.map,
         fb.pitch
     );
-    detail::compose_kms_frame(image, dst, fullscreen_, resize_scratch_);
+    detail::compose_kms_frame(
+        image, dst, fullscreen_, resize_scratch_, scaling_
+    );
 
     if (drmModeSetPlane(
             fd_,

@@ -196,6 +196,15 @@ void draw_hdmi_telemetry(
             last_snapshot->e2e_max_ms
         );
         line(text);
+        std::snprintf(
+            text,
+            sizeof(text),
+            "wait %.1f  draw %.1f  show %.1f ms",
+            last_snapshot->wait_ms,
+            last_snapshot->draw_ms,
+            last_snapshot->show_ms
+        );
+        line(text);
     } else {
         line("metrics: warming up");
     }
@@ -314,7 +323,10 @@ int main(int argc, char* argv[])
                 options.fullscreen,
                 options.kms_plane == "overlay"
                     ? KmsPlane::Overlay
-                    : KmsPlane::Primary
+                    : KmsPlane::Primary,
+                options.kms_scaling == "linear"
+                    ? KmsScaling::Linear
+                    : KmsScaling::Nearest
             ));
         } else {
             display.reset(new HdmiDisplay(
@@ -625,6 +637,7 @@ int main(int argc, char* argv[])
             }
 
             if (handoff.try_pop(packet)) {
+                const auto popped_at = Clock::now();
                 draw_detection_annotations(
                     packet.image,
                     packet.annotations,
@@ -652,6 +665,18 @@ int main(int argc, char* argv[])
                     packet.frame_start,
                     now
                 );
+                const double wait_ms = elapsed_ms(
+                    packet.completed_at,
+                    popped_at
+                );
+                const double draw_ms = elapsed_ms(
+                    popped_at,
+                    submit_start
+                );
+                const double show_ms = elapsed_ms(
+                    submit_start,
+                    now
+                );
 
                 if (options.telemetry) {
                     telemetry.record(
@@ -659,7 +684,10 @@ int main(int argc, char* argv[])
                         packet.preprocess_ms,
                         packet.dpu_ms,
                         packet.depth_map_ms,
-                        e2e_ms
+                        e2e_ms,
+                        wait_ms,
+                        draw_ms,
+                        show_ms
                     );
 
                     std::optional<TelemetrySnapshot> due =
@@ -676,6 +704,12 @@ int main(int argc, char* argv[])
                             << due->e2e_mean_ms
                             << " ms e2e_max="
                             << due->e2e_max_ms
+                            << " ms wait="
+                            << due->wait_ms
+                            << " ms draw="
+                            << due->draw_ms
+                            << " ms show="
+                            << due->show_ms
                             << " ms";
 
                         if (!options.test_pattern) {

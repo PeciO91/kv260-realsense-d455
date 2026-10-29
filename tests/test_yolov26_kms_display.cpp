@@ -123,16 +123,80 @@ void test_compose_fullscreen_and_rgb565()
     const cv::Rect rect = compose_kms_frame(image, dst, true, scratch);
 
     check(rect_is(rect, 0, 8, 64, 32), "rgb565 fullscreen fit rect");
-    check(scratch.cols == 64 && scratch.rows == 32,
-          "fullscreen resizes into scratch");
+    check(scratch.cols == 16 && scratch.rows == 8
+              && scratch.type() == CV_8UC2,
+          "nearest converts at native size into scratch");
     check(dst.at<cv::Vec2b>(24, 32) == cv::Vec2b(0xFF, 0xFF),
           "rgb565 white pixel");
-    check(dst.at<cv::Vec2b>(0, 0) == cv::Vec2b(0, 0),
+    check(dst.at<cv::Vec2b>(8, 0) == cv::Vec2b(0xFF, 0xFF)
+              && dst.at<cv::Vec2b>(39, 63) == cv::Vec2b(0xFF, 0xFF),
+          "rgb565 content corners filled");
+    check(dst.at<cv::Vec2b>(0, 0) == cv::Vec2b(0, 0)
+              && dst.at<cv::Vec2b>(7, 30) == cv::Vec2b(0, 0)
+              && dst.at<cv::Vec2b>(40, 30) == cv::Vec2b(0, 0),
           "rgb565 margin untouched");
 
     const unsigned char* scratch_data = scratch.data;
     compose_kms_frame(image, dst, true, scratch);
     check(scratch.data == scratch_data, "scratch storage reused");
+
+    cv::Mat linear_scratch;
+    compose_kms_frame(
+        image, dst, true, linear_scratch, KmsScaling::Linear
+    );
+    check(linear_scratch.cols == 64 && linear_scratch.rows == 32
+              && linear_scratch.type() == CV_8UC3,
+          "linear resizes BGR into scratch");
+    check(dst.at<cv::Vec2b>(24, 32) == cv::Vec2b(0xFF, 0xFF),
+          "linear rgb565 white pixel");
+}
+
+void test_nearest_halves()
+{
+    const int sw = 64;
+    const int sh = 32;
+    const int pitch = sw * 4 + 16;
+    std::vector<unsigned char> memory(pitch * sh, 0xAB);
+    cv::Mat dst(sh, sw, CV_8UC4, memory.data(), pitch);
+    for (int y = 0; y < sh; ++y) {
+        std::memset(memory.data() + y * pitch, 0, sw * 4);
+    }
+
+    cv::Mat image(8, 16, CV_8UC3, cv::Scalar(0, 0, 255));
+    image(cv::Rect(8, 0, 8, 8)).setTo(cv::Scalar(255, 0, 0));
+    cv::Mat scratch;
+    const cv::Rect rect = compose_kms_frame(image, dst, true, scratch);
+
+    check(rect_is(rect, 0, 0, 64, 32), "xr24 nearest fills mode");
+    check(dst.at<cv::Vec4b>(0, 0)[2] == 255
+              && dst.at<cv::Vec4b>(31, 30)[2] == 255,
+          "xr24 nearest left half red");
+    check(dst.at<cv::Vec4b>(0, 33)[0] == 255
+              && dst.at<cv::Vec4b>(31, 63)[0] == 255,
+          "xr24 nearest right half blue");
+    check(dst.at<cv::Vec4b>(16, 31)[2] == 255
+              && dst.at<cv::Vec4b>(16, 32)[0] == 255,
+          "xr24 nearest edge at half width");
+
+    bool padding_intact = true;
+    for (int y = 0; y < sh; ++y) {
+        for (int b = sw * 4; b < pitch; ++b) {
+            if (memory[y * pitch + b] != 0xAB) {
+                padding_intact = false;
+            }
+        }
+    }
+    check(padding_intact, "xr24 nearest row padding unchanged");
+
+    std::vector<unsigned char> linear_memory(pitch * sh, 0);
+    cv::Mat linear_dst(sh, sw, CV_8UC4, linear_memory.data(), pitch);
+    cv::Mat linear_scratch;
+    compose_kms_frame(
+        image, linear_dst, true, linear_scratch, KmsScaling::Linear
+    );
+    check(linear_dst.at<cv::Vec4b>(0, 0)[2] == 255
+              && linear_dst.at<cv::Vec4b>(31, 63)[0] == 255,
+          "xr24 linear matches halves at extremes");
 }
 
 void test_compose_rejects_invalid()
@@ -171,6 +235,7 @@ int main()
     test_content_rect();
     test_compose_xr24();
     test_compose_fullscreen_and_rgb565();
+    test_nearest_halves();
     test_compose_rejects_invalid();
 
     std::printf("%d checks, %d failures\n", checks, failures);

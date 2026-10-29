@@ -16,6 +16,11 @@ enum class KmsPlane {
     Overlay,
 };
 
+enum class KmsScaling {
+    Nearest,
+    Linear,
+};
+
 namespace detail {
 
 cv::Rect kms_content_rect(
@@ -29,13 +34,14 @@ cv::Rect compose_kms_frame(
     const cv::Mat& image,
     cv::Mat& destination,
     bool fullscreen,
-    cv::Mat& resize_scratch);
+    cv::Mat& scratch,
+    KmsScaling scaling = KmsScaling::Nearest);
 
 } // namespace detail
 
 class KmsDisplay : public Display {
 public:
-    KmsDisplay(bool fullscreen, KmsPlane plane);
+    KmsDisplay(bool fullscreen, KmsPlane plane, KmsScaling scaling);
     ~KmsDisplay() override;
 
     KmsDisplay(const KmsDisplay&) = delete;
@@ -88,6 +94,7 @@ private:
     int fd_ = -1;
     bool fullscreen_;
     KmsPlane plane_;
+    KmsScaling scaling_;
     bool window_open_ = true;
     int screen_width_ = 0;
     int screen_height_ = 0;
