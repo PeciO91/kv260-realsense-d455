@@ -185,57 +185,41 @@ glass-to-glass. Method, caveats and raw logs: [`docs/performance/`](docs/perform
 
 Step numbers match the log files in `docs/performance/1080p/`.
 
-**Fullscreen 1080p display path**
+**Reference points** (not fullscreen output; they show what the pipeline can do)
 
-| # | Step | FPS | Latency mean (ms) | CPU % | Notes |
-|---|------|----:|------------------:|------:|-------|
-| 1 | X11, new 1920x1080 canvas every frame, then resize + copy | 8.7 | 172.4 | 77 | **display-bound** |
-| 2 | + reuse the canvas, `waitKey(1)` | 9.7 | 162.3 | 79 | no real change |
-| 4 | X11, aspect-fit upscale to 1080p | 9.7 | 159.7 | 77 | display-bound again |
-| 5 | KMS, software bilinear scale into the scan-out buffer | 29.2 | 78.2 | 65 | camera-rate, high latency |
-| 6 | KMS, nearest-neighbour at 16/32-bit word level | **29.5** | **45.3** | **33** | **final** |
+| # | Run | FPS | Latency (ms) | CPU % | What it tells us |
+|---|-----|----:|-------------:|------:|------------------|
+| 0 | MJPEG stream to a browser | 29.6 | 51.6 | 36 | the pipeline itself runs at camera rate |
+| 3 | X11, 848x480 frame in a native-size window | 29.4 | 50.1 | 52 | X11 keeps up when it pushes 5× fewer pixels |
 
-**Reference points, not fullscreen output** (used to explain the results, not part of the progression)
+**Optimisation steps: fullscreen 1080p display**
 
-| # | Run | FPS | Latency mean (ms) | CPU % | What it tells us |
-|---|-----|----:|------------------:|------:|------------------|
-| 0 | MJPEG stream to a browser | 29.6 | 51.6 | 36 | the pipeline itself runs at camera rate, with no local display |
-| 3 | X11, 848x480 frame shown as-is in a native-size window | 29.4 | 50.1 | 52 | with 5× fewer pixels, X11 also keeps up, so cost follows the pixels pushed |
+| # | Step | FPS | Latency (ms) | CPU % |
+|---|------|----:|-------------:|------:|
+| 1 | X11, new 1920x1080 canvas every frame, then resize + copy | 8.7 | 172.4 | 77 |
+| 2 | + reuse the canvas, `waitKey(1)` | 9.7 | 162.3 | 79 |
+| 4 | X11, aspect-fit upscale to 1080p | 9.7 | 159.7 | 77 |
+| 5 | KMS, bilinear scaling in software | 29.2 | 78.2 | 65 |
+| 6 | KMS, nearest-neighbour at 16/32-bit word level | **29.5** | **45.3** | **33** |
 
-### What was the bottleneck, and what we did
+### Bottleneck and steps
 
-**Steps 1 → 2: the display, not inference.** At 8.7 FPS the frame period is 115 ms, yet
-preprocessing (24 ms) + DPU (12 ms) + depth (1 ms) add up to only ~37 ms. The rest is the
-GUI loop: every frame allocated a 1920x1080x3 canvas (6.2 MB), resized the camera frame
-into it and pushed it to the X server. That version has no per-stage display timer, so
-this is inferred from the frame budget. Reusing the canvas and polling faster (step 2)
-changed FPS by ~1 and CPU not at all: **allocation was not the cost.**
-
-**Step 4: the cost is the pixels, not the code around them.** Reference run 3 shows the same
-X11 path handles the 848x480 frame (1.2 MB) at camera rate. OpenCV 4.5.2's GTK backend does not
-scale to the window, so a fullscreen picture needs our own upscale, and sending 6.2 MB per
-frame through X on the A53 brings back 9.7 FPS. An earlier ~30 FPS result for this upscale was
-measured with the monitor in a 1024x768 mode, where the upscaled frame was only 1024x580
-(3.5× fewer pixels), which is why those numbers had to be re-measured at 1080p. **At
-1080p, X11 cannot reach camera rate on this board.**
-
-**Dead end: hardware scaling.** The first KMS attempt assumed the DisplayPort subsystem's video
-layer would scale 848x480 to 1080p. It showed a black screen: the ZynqMP DPSUB has **no
-scaler**, both layers must share one source size, and the driver logged
-`Layer width:height must be 1920:1080` and skipped the layer. Early numbers from that
-version were discarded. The fix was to give the DPSUB buffers of the full
-mode size and do the scaling in software.
-
-**Step 5: remove X, keep the scaling.** Writing straight into DRM dumb buffers removes
-GTK and X and reaches 29.2 FPS. But the bilinear resize to 1080p costs ~30 ms per frame on
-the A53 (`show` = 30.0 ms), which keeps CPU at 65 % and latency at 78 ms.
-
-**Step 6: cheaper scaling.** Convert the frame to the scan-out pixel format at native
-size (848x480), then upscale by nearest-neighbour copying whole 16/32-bit words. `show`
-dropped 30.0 → 7.1 ms, CPU 65 → 33 %, latency 78 → 45 ms. It is now **camera-limited and
-as cheap as the browser stream** (33 % vs 36 % CPU; 45 ms vs 52 ms, measured to different
-end points: display hand-over vs completed send). Nearest-neighbour is blockier than
-bilinear; `--kms-scaling linear` keeps the smoother option.
+- **1 → 2, the display, not inference.** At 8.7 FPS the frame period is 115 ms, but
+  preprocessing + DPU + depth take only ~37 ms. The rest is the GUI loop pushing a fresh
+  6.2 MB canvas to X every frame. Reusing the canvas changed nothing, so allocation was
+  not the cost.
+- **4, it is the pixels.** Reference 3 shows the same X11 path keeps up with a 1.2 MB frame,
+  and OpenCV's GTK backend cannot scale to fullscreen, so we upscale ourselves and are back
+  to 9.7 FPS. An earlier ~30 FPS result was measured at 1024x768 (3.5× fewer pixels), so the
+  numbers were re-measured at 1080p. X11 cannot reach camera rate here.
+- **Dead end, hardware scaling.** The ZynqMP display has no scaler (both layers must share one
+  source size), so the first KMS attempt showed a black screen. The fix was full-mode-size
+  buffers with scaling in software.
+- **5, drop X.** Writing straight into DRM buffers reaches camera rate, but the software
+  bilinear resize costs ~30 ms per frame on the A53 (65 % CPU, 78 ms).
+- **6, cheaper scaling.** Convert at native size, then upscale by copying whole 16/32-bit
+  words (nearest-neighbour): display time 30.0 → 7.1 ms, CPU 65 → 33 %, latency 78 → 45 ms.
+  `--kms-scaling linear` keeps the smoother option.
 
 ### Why latency dropped but FPS barely moved (steps 5 → 6)
 
