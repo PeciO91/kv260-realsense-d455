@@ -1,10 +1,51 @@
-# Mock YOLOv26 sender usage guide
+# Scripts
 
-Guide for `mock_yolov26_sender.py` in this directory. See also the
-[Mock YOLOv26 network sender](../README.md#mock-yolov26-network-sender)
-section in the project README.
+Everything here is run from the **repository root**. Build scripts write
+binaries to `build/` (git-ignored); launchers default to those binaries.
 
-## What it does
+## Catalogue
+
+| Script | Kind | Runs on | Purpose |
+|--------|------|---------|---------|
+| `build_live_yolov26.sh` | build | KV260 | Compile the YOLOv26 browser MJPEG app (`inference/yolov26/mjpeg` + `core`) → `build/live_yolov26_realsense` |
+| `build_live_yolov26_rpi.sh` | build | KV260 | Compile the Pi sender (`rpi` + `core`) → `build/live_yolov26_rpi`. Options `--deps-prefix DIR`, `--rs-prefix DIR`. Checks for GStreamer/hiredis pkg-config modules and librealsense before compiling |
+| `build_live_yolov26_hdmi.sh` | build | KV260 | Compile the HDMI app with both X11 and KMS backends (`hdmi` + `core`) → `build/live_yolov26_hdmi`. Option `--rs-prefix DIR`. Checks for `opencv4 x11 gtk+-3.0 libdrm` |
+| `build_live_densebox.sh` | build | KV260 | Compile the live DenseBox MJPEG app → `build/live_densebox_realsense` |
+| `build_densebox_realsense.sh` | build | KV260 | Compile the single-shot DenseBox diagnostic → `build/densebox_realsense` (`CXX` env override) |
+| `run_live_yolov26_hdmi.py` | launcher | KV260 | Wraps `build/live_yolov26_hdmi`. Adds `--check-display` (XRandR/DPMS query) and `--wake-display` (DPMS on, screensaver reset) that never touch the camera or model. Everything after `--` goes to the binary |
+| `run_live_yolov26_rpi.py` | launcher | KV260 | Execs `build/live_yolov26_rpi` with the isolated GStreamer/hiredis environment from `--deps-prefix` (plugin paths, private registry), so nothing is installed globally |
+| `mock_yolov26_sender.py` | test tool | KV260 or any Linux | Sends synthetic H.264/RTP video plus a simulated Redis `face_detected` flag using the real wire contract. Needs no camera, model or DPU. Lets the Pi receiver be developed independently. See [the guide below](#mock-sender-usage-guide) |
+| `summarize_telemetry.py` | analysis | any | Turns saved `[telemetry]` logs into the markdown tables used in the main README (see [`docs/performance/`](../docs/performance/README.md)) |
+
+### Typical workflows
+
+```sh
+# Browser view
+sh scripts/build_live_yolov26.sh && ./build/live_yolov26_realsense --model <xmodel>
+
+# Local monitor, lowest latency
+sh scripts/build_live_yolov26_hdmi.sh
+systemctl stop xserver-nodm
+./build/live_yolov26_hdmi --renderer kms --model <xmodel> --telemetry true
+
+# Raspberry Pi
+sh scripts/build_live_yolov26_rpi.sh
+python3 scripts/run_live_yolov26_rpi.py --pi-host <PI_IP> --encoder x264 --model <xmodel>
+
+# Develop the Pi receiver without hardware
+python3 scripts/mock_yolov26_sender.py --pi-host <PI_IP> --encoder x264
+```
+
+The launchers and the mock share dependency-prefix helpers:
+`run_live_yolov26_rpi.py` imports them from `mock_yolov26_sender.py`.
+
+---
+
+## Mock sender usage guide
+
+Guide for `mock_yolov26_sender.py`.
+
+### What it does
 
 The mock sender transmits synthetic `videotestsrc` imagery as
 H.264/RTP/UDP and, independently, publishes a simulated face-detection
@@ -14,7 +55,7 @@ the published boolean. It lets the receiver integration be tested
 independently of camera/DPU inference, using the same transport
 contract as the real sender.
 
-## Requirements
+### Requirements
 
 On the sender:
 
@@ -33,7 +74,7 @@ reachable Redis server. The script does not create or start Redis and
 does not supply a receiver. `redis-cli` is an optional diagnostic tool,
 not a sender dependency.
 
-## Run
+### Run
 
 From `scripts/` (or any folder containing the script):
 
@@ -55,7 +96,7 @@ seconds after startup completes; Ctrl+C stops it earlier.
 and a changing status; after missed deadlines the boolean may repeat a
 value rather than strictly alternating each delivered message.
 
-## Video on the Pi
+### Video on the Pi
 
 The example uses UDP port 5002; sender and receiver ports must match.
 Nominal video is 848x480 at 30 FPS — a nominal rate, not a guaranteed
@@ -67,7 +108,7 @@ application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=96
 
 No receiver implementation or pipeline is supplied here.
 
-## Redis
+### Redis
 
 By default the sender publishes to the Pi host on TCP port 6379; use
 `--redis-host REDIS_IP` and `--redis-port PORT` to point at a different
@@ -87,7 +128,7 @@ is replayed, and the status stream is independent of the video. The
 Redis endpoint must stay private/source-restricted; plain TCP only, no
 AUTH or TLS support.
 
-## Defaults vs. this example
+### Defaults vs. this example
 
 The defaults are video port 5000 and channel `face_detection`; the
 example deliberately uses port 5002 and a test channel so it does not

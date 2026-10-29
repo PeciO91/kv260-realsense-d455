@@ -24,7 +24,9 @@ env/
 *.png
 output/
 runs/
-inference/live_yolov26_hdmi
+
+# Build output
+build/
 
 # Logs
 *.log

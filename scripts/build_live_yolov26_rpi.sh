@@ -85,16 +85,19 @@ fi
 echo "Dependency prefix: $DEPS_PREFIX"
 echo "RealSense prefix:  $RS_PREFIX ($RS_LIBDIR)"
 
+mkdir -p build
+
 g++ \
     -std=c++17 \
     -O2 \
     -Wall \
     -Wextra \
-    inference/live_yolov26_rpi.cpp \
-    inference/yolov26_realsense_core.cpp \
-    inference/yolov26_rpi_control.cpp \
-    inference/yolov26_rpi_transport.cpp \
-    -I inference \
+    inference/yolov26/rpi/live_yolov26_rpi.cpp \
+    inference/yolov26/core/yolov26_realsense_core.cpp \
+    inference/yolov26/rpi/yolov26_rpi_control.cpp \
+    inference/yolov26/rpi/yolov26_rpi_transport.cpp \
+    -I inference/yolov26/core \
+    -I inference/yolov26/rpi \
     -I"${RS_PREFIX}/include" \
     -L"${RS_LIBDIR}" \
     -Wl,-rpath,"${RS_LIBDIR}" \
@@ -106,6 +109,6 @@ g++ \
     -lunilog \
     -lglog \
     -pthread \
-    -o inference/live_yolov26_rpi
+    -o build/live_yolov26_rpi
 
-echo "Built inference/live_yolov26_rpi"
+echo "Built build/live_yolov26_rpi"

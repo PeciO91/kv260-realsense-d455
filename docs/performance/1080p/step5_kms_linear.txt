@@ -1,0 +1,60 @@
+=== step5_kms_linear (83cb6ca) --renderer kms --kms-scaling linear --fullscreen true
+[kms] graphics plane 40 blending before: g_alpha_en=0 alpha=0
+[kms] graphics plane blending now: g_alpha_en=1 alpha=255
+[kms] primary plane=40 crtc=41 connector=43 mode=1920x1080 graphics_plane=40 overlay_plane=39 fb_pitch=3840 scaling=linear
+Display: kms 1920x1080 fullscreen
+Selected D455 configuration:
+RGB:   848x480 @ 30 FPS (native YUYV, OpenCV BGR8)
+Depth: 424x240 @ 30 FPS Z16
+Loading YOLOv26 model: /home/root/models/yolov26n_facehuman_kria.xmodel
+Model input tensors:
+  DetectionModel__input_0_fix shape=[1,640,640,3] XINT8 fix_point=6
+Model output tensors:
+  DetectionModel__DetectionModel_Detect_model__Detect_23__Sequential_one2one_cv2__ModuleList_0__Conv2d_2__ret_447_fix shape=[1,80,80,4] XINT8 fix_point=3
+  DetectionModel__DetectionModel_Detect_model__Detect_23__Sequential_one2one_cv2__ModuleList_1__Conv2d_2__ret_475_fix shape=[1,40,40,4] XINT8 fix_point=3
+  DetectionModel__DetectionModel_Detect_model__Detect_23__Sequential_one2one_cv2__ModuleList_2__Conv2d_2__ret_503_fix shape=[1,20,20,4] XINT8 fix_point=3
+  DetectionModel__DetectionModel_Detect_model__Detect_23__Sequential_one2one_cv3__ModuleList_0__Conv2d_2__ret_465_fix shape=[1,80,80,2] XINT8 fix_point=2
+  DetectionModel__DetectionModel_Detect_model__Detect_23__Sequential_one2one_cv3__ModuleList_1__Conv2d_2__ret_493_fix shape=[1,40,40,2] XINT8 fix_point=0
+  DetectionModel__DetectionModel_Detect_model__Detect_23__Sequential_one2one_cv3__ModuleList_2__Conv2d_2__ret_fix shape=[1,20,20,2] XINT8 fix_point=0
+Model input: 640x640
+Confidence threshold: 0.3
+Max detections: 50
+Starting RealSense D455...
+Camera: RealSense D455
+Depth scale: 0.001 m/unit
+Depth sampling: 5x5 calibrated grid
+Warming up...
+Streaming. Press Escape, q or Ctrl+C to stop.
+[telemetry] fps=0.22653 e2e_mean=134.858 ms e2e_max=134.858 ms wait=3.46739 ms draw=2.54484 ms show=63.0285 ms acquire=33.2869 ms preprocess=21.1577 ms dpu=11.0984 ms depth=0.274005 ms ram=647/3929 MB temp=34.101 C
+[telemetry] fps=28.7188 e2e_mean=81.4657 ms e2e_max=103.34 ms wait=14.3167 ms draw=1.19732 ms show=31.273 ms acquire=1.68753 ms preprocess=20.2835 ms dpu=12.5131 ms depth=0.194617 ms cpu=64.5885% ram=657/3929 MB temp=35.065 C
+[telemetry] fps=29.555 e2e_mean=78.8909 ms e2e_max=98.2354 ms wait=14.0945 ms draw=1.2608 ms show=30.2508 ms acquire=1.53796 ms preprocess=19.8465 ms dpu=11.7036 ms depth=0.196784 ms cpu=66.9136% ram=658/3929 MB temp=34.536 C
+[telemetry] fps=27.9343 e2e_mean=79.0422 ms e2e_max=100.834 ms wait=12.7042 ms draw=1.23756 ms show=30.2479 ms acquire=3.48907 ms preprocess=19.0923 ms dpu=12.0611 ms depth=0.210119 ms cpu=63.4085% ram=659/3929 MB temp=35.702 C
+[telemetry] fps=27.9676 e2e_mean=78.3226 ms e2e_max=96.7861 ms wait=11.5964 ms draw=1.23706 ms show=31.9002 ms acquire=2.32103 ms preprocess=19.2747 ms dpu=11.7739 ms depth=0.219229 ms cpu=63% ram=659/3929 MB temp=35.671 C
+[telemetry] fps=29.7829 e2e_mean=79.1217 ms e2e_max=96.1666 ms wait=13.7651 ms draw=1.23542 ms show=30.1127 ms acquire=2.86674 ms preprocess=19.0174 ms dpu=11.9007 ms depth=0.223616 ms cpu=64.3204% ram=659/3929 MB temp=33.977 C
+[telemetry] fps=28.9761 e2e_mean=77.1735 ms e2e_max=100.824 ms wait=12.1182 ms draw=1.41144 ms show=28.8632 ms acquire=3.3122 ms preprocess=19.4351 ms dpu=11.835 ms depth=0.198432 ms cpu=65.4321% ram=659/3929 MB temp=34.35 C
+[telemetry] fps=27.8128 e2e_mean=75.4358 ms e2e_max=101.796 ms wait=10.0856 ms draw=1.26561 ms show=30.0294 ms acquire=2.48378 ms preprocess=19.5465 ms dpu=11.8289 ms depth=0.196122 ms cpu=65.679% ram=661/3929 MB temp=34.256 C
+[telemetry] fps=29.8895 e2e_mean=77.0412 ms e2e_max=103.31 ms wait=12.3722 ms draw=1.37641 ms show=29.0113 ms acquire=3.11152 ms preprocess=19.302 ms dpu=11.6699 ms depth=0.197817 ms cpu=64.3902% ram=660/3929 MB temp=34.831 C
+[telemetry] fps=28.7784 e2e_mean=79.0466 ms e2e_max=95.7587 ms wait=13.2134 ms draw=1.37741 ms show=30.4745 ms acquire=2.78426 ms preprocess=18.925 ms dpu=11.9545 ms depth=0.317439 ms cpu=64.4836% ram=663/3929 MB temp=35.298 C
+[telemetry] fps=28.9642 e2e_mean=75.8943 ms e2e_max=106.49 ms wait=11.6847 ms draw=1.35856 ms show=28.6227 ms acquire=2.80137 ms preprocess=19.1268 ms dpu=12.1068 ms depth=0.19338 ms cpu=63.6132% ram=662/3929 MB temp=35.204 C
+[telemetry] fps=28.3324 e2e_mean=77.6734 ms e2e_max=99.9059 ms wait=11.6533 ms draw=1.18556 ms show=30.3191 ms acquire=3.30527 ms preprocess=18.7565 ms dpu=12.2589 ms depth=0.194704 ms cpu=63.6132% ram=662/3929 MB temp=35.204 C
+[telemetry] fps=29.7995 e2e_mean=75.1911 ms e2e_max=97.8194 ms wait=11.2096 ms draw=1.45069 ms show=28.3202 ms acquire=3.07675 ms preprocess=19.1611 ms dpu=11.78 ms depth=0.192782 ms cpu=65.4321% ram=662/3929 MB temp=35.515 C
+[telemetry] fps=28.725 e2e_mean=80.1482 ms e2e_max=97.3921 ms wait=13.7025 ms draw=1.19774 ms show=31.4585 ms acquire=2.72939 ms preprocess=19.0682 ms dpu=11.7863 ms depth=0.20555 ms cpu=65.4321% ram=662/3929 MB temp=35.515 C
+[telemetry] fps=29.8476 e2e_mean=77.6667 ms e2e_max=102.865 ms wait=13.2422 ms draw=1.21441 ms show=29.6413 ms acquire=0.671454 ms preprocess=20.3766 ms dpu=12.3243 ms depth=0.196404 ms cpu=65.3012% ram=662/3929 MB temp=33.775 C
+[telemetry] fps=29.6017 e2e_mean=77.2228 ms e2e_max=95.795 ms wait=12.5074 ms draw=1.27292 ms show=29.4327 ms acquire=2.83045 ms preprocess=19.2254 ms dpu=11.7557 ms depth=0.198199 ms cpu=65.3753% ram=662/3929 MB temp=35.173 C
+[telemetry] fps=29.5708 e2e_mean=79.5443 ms e2e_max=97.0912 ms wait=13.7292 ms draw=1.23338 ms show=30.3592 ms acquire=3.77916 ms preprocess=18.5436 ms dpu=11.7031 ms depth=0.196714 ms cpu=65.7568% ram=663/3929 MB temp=36.666 C
+[telemetry] fps=27.8441 e2e_mean=80.7039 ms e2e_max=112.985 ms wait=13.26 ms draw=1.25103 ms show=31.7378 ms acquire=3.08639 ms preprocess=19.1237 ms dpu=12.0494 ms depth=0.195618 ms cpu=64.1463% ram=661/3929 MB temp=35.888 C
+[telemetry] fps=28.6916 e2e_mean=79.3492 ms e2e_max=96.5228 ms wait=12.8625 ms draw=1.29376 ms show=30.735 ms acquire=2.85023 ms preprocess=19.4298 ms dpu=11.9164 ms depth=0.261529 ms cpu=64.4769% ram=662/3929 MB temp=34.552 C
+[telemetry] fps=29.3163 e2e_mean=79.3708 ms e2e_max=96.9943 ms wait=13.0553 ms draw=1.22009 ms show=30.8783 ms acquire=2.70627 ms preprocess=19.3876 ms dpu=11.9259 ms depth=0.197341 ms cpu=64.3392% ram=662/3929 MB temp=35.686 C
+[telemetry] fps=29.064 e2e_mean=79.0145 ms e2e_max=95.7542 ms wait=12.7494 ms draw=1.22811 ms show=30.7845 ms acquire=2.99268 ms preprocess=19.3006 ms dpu=11.7613 ms depth=0.197836 ms cpu=65.4135% ram=661/3929 MB temp=35.593 C
+[telemetry] fps=30.2663 e2e_mean=76.3356 ms e2e_max=96.4016 ms wait=12.8998 ms draw=1.24892 ms show=29.0863 ms acquire=1.51502 ms preprocess=19.6822 ms dpu=11.708 ms depth=0.195284 ms cpu=63.747% ram=663/3929 MB temp=36.168 C
+[telemetry] fps=29.622 e2e_mean=78.2646 ms e2e_max=96.9284 ms wait=13.4416 ms draw=1.20486 ms show=29.597 ms acquire=3.01774 ms preprocess=18.9793 ms dpu=11.826 ms depth=0.198262 ms cpu=67.1569% ram=658/3929 MB temp=35.111 C
+[telemetry] fps=29.2693 e2e_mean=78.2291 ms e2e_max=96.0924 ms wait=12.9135 ms draw=1.3882 ms show=29.2002 ms acquire=2.27759 ms preprocess=19.5519 ms dpu=12.6678 ms depth=0.229982 ms cpu=64.7355% ram=658/3929 MB temp=35.127 C
+[telemetry] fps=29.6124 e2e_mean=76.6424 ms e2e_max=96.509 ms wait=12.7659 ms draw=1.3362 ms show=28.9104 ms acquire=2.25593 ms preprocess=19.275 ms dpu=11.9032 ms depth=0.195773 ms cpu=64.5729% ram=658/3929 MB temp=35.64 C
+[telemetry] fps=28.0242 e2e_mean=77.5974 ms e2e_max=108.882 ms wait=11.504 ms draw=1.2683 ms show=29.9888 ms acquire=2.94257 ms preprocess=19.9298 ms dpu=11.7665 ms depth=0.197499 ms cpu=66.0099% ram=658/3929 MB temp=35.935 C
+[telemetry] fps=29.3379 e2e_mean=78.3545 ms e2e_max=95.6739 ms wait=12.8348 ms draw=1.29717 ms show=30.3027 ms acquire=2.39174 ms preprocess=19.3721 ms dpu=11.9584 ms depth=0.197634 ms cpu=64.6766% ram=658/3929 MB temp=36.557 C
+[telemetry] fps=29.191 e2e_mean=79.6031 ms e2e_max=97.0696 ms wait=13.6289 ms draw=1.29384 ms show=31.4168 ms acquire=1.20555 ms preprocess=20.1785 ms dpu=11.6818 ms depth=0.197829 ms cpu=65.5087% ram=658/3929 MB temp=36.526 C
+[telemetry] fps=30.8416 e2e_mean=77.9326 ms e2e_max=97.7252 ms wait=14.7262 ms draw=1.22322 ms show=29.0481 ms acquire=1.48217 ms preprocess=19.4023 ms dpu=11.8562 ms depth=0.194445 ms cpu=65.4412% ram=659/3929 MB temp=35.127 C
+[telemetry] fps=28.9452 e2e_mean=81.5597 ms e2e_max=101.661 ms wait=14.3502 ms draw=1.23602 ms show=31.7108 ms acquire=2.35687 ms preprocess=19.4907 ms dpu=12.2156 ms depth=0.199483 ms cpu=65.6934% ram=659/3929 MB temp=36.961 C
+[telemetry] fps=29.5903 e2e_mean=77.8298 ms e2e_max=105.649 ms wait=12.4344 ms draw=1.35917 ms show=29.8411 ms acquire=2.57498 ms preprocess=19.7034 ms dpu=11.7187 ms depth=0.198034 ms cpu=65.8416% ram=658/3929 MB temp=36.386 C
+Display closed.
+rc=0

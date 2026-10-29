@@ -49,9 +49,8 @@ With the RSUSB backend, the following sequence works correctly:
 
 without crashing the kernel.
 
-## Current USB connection
+## USB connection
 
-The camera currently operates over USB 2.0.
-
-RGB 640x480 is sufficient for development, but USB 3.x is recommended
-for simultaneous RGB + depth operation and higher bandwidth.
+The D455 is connected to a USB 3 port (`lsusb -t` shows 5000M for the camera).
+The early bring-up ran over USB 2.0, which limits 640x480 RGB + depth; the current
+848x480 colour + 424x240 depth at 30 FPS configuration was measured on USB 3.

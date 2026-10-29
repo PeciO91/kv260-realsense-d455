@@ -59,17 +59,20 @@ fi
 
 echo "RealSense prefix:  $RS_PREFIX ($RS_LIBDIR)"
 
+mkdir -p build
+
 g++ \
     -std=c++17 \
     -O2 \
     -Wall \
     -Wextra \
-    inference/live_yolov26_hdmi.cpp \
-    inference/yolov26_realsense_core.cpp \
-    inference/yolov26_hdmi_control.cpp \
-    inference/yolov26_hdmi_display.cpp \
-    inference/yolov26_kms_display.cpp \
-    -I inference \
+    inference/yolov26/hdmi/live_yolov26_hdmi.cpp \
+    inference/yolov26/core/yolov26_realsense_core.cpp \
+    inference/yolov26/hdmi/yolov26_hdmi_control.cpp \
+    inference/yolov26/hdmi/yolov26_hdmi_display.cpp \
+    inference/yolov26/hdmi/yolov26_kms_display.cpp \
+    -I inference/yolov26/core \
+    -I inference/yolov26/hdmi \
     -I"${RS_PREFIX}/include" \
     -L"${RS_LIBDIR}" \
     -Wl,-rpath,"${RS_LIBDIR}" \
@@ -80,6 +83,6 @@ g++ \
     -lunilog \
     -lglog \
     -pthread \
-    -o inference/live_yolov26_hdmi
+    -o build/live_yolov26_hdmi
 
-echo "Built inference/live_yolov26_hdmi"
+echo "Built build/live_yolov26_hdmi"

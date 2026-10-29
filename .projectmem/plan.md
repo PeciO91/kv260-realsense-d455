@@ -15,7 +15,7 @@ _What we're working toward now. Use `- [ ]` / `- [x]` checklists._
 
 - [ ] #0012 KMS black screen — Phase 2 at the board with a monitor. Phase 1 (code + headless
   checks) done, uncommitted; staged build `/tmp/kv260-kms.2Ccm8T` on `ssh fpga`. Run
-  `./inference/live_yolov26_hdmi --renderer kms --test-pattern --duration-seconds 30
+  `./build/live_yolov26_hdmi --renderer kms --test-pattern --duration-seconds 30
   --kms-plane primary|overlay --fullscreen true|false` (X stopped) and confirm bars are
   visible/animating; then q/Esc + Ctrl-C exit and console recovery; then a real camera run.
   If overlay is black but primary visible: blending/DMA. If both black with clean dmesg:
@@ -26,12 +26,16 @@ _Queued, but not started._
 
 - [ ] User-run real vision verification on KV260 — deliberately manual
   (never executed by us): deployed app at `/home/root/kv260-hdmi`,
-  user supplies model `/home/root/yolov26n_fastft_test/yolov26n_facehuman_kria.xmodel`.
+  user supplies model `/home/root/models/yolov26n_facehuman_kria.xmodel`.
 
 ## Someday / maybe
 
 ## Shipped
 _Move completed plans here so the top stays about the future._
+
+- [x] Repo restructure + README rework (2026-10-29): inference split into densebox/ and
+  yolov26/{core,mjpeg,rpi,hdmi}, camera/ -> tools/camera_bringup/, tests mirror the layout,
+  binaries to build/, per-folder READMEs, 1080p profiling study in docs/performance/.
 
 - [x] Native YOLOv26 HDMI display (approved plan plan-bd82a02c9a2efc5f):
   fullscreen X11 app + synthetic `--test-pattern`, launcher check/wake,
@@ -45,4 +49,4 @@ _Move completed plans here so the top stays about the future._
   default 50, `--show-depth-roi` / `--show-confidence` on browser + Pi,
   browser `--telemetry true|false` gating monitor polling/overlay/logs.
   Verified by native control fixture plus host extraction fixtures
-  (`tests/test_yolov26_overlay_options.py`); board build not run on host.
+  (`tests/yolov26/mjpeg/test_yolov26_overlay_options.py`); board build not run on host.

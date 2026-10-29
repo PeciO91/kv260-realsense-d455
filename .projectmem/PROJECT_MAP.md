@@ -1,6 +1,6 @@
 # Project Map - KV260_Camera
 
-Reviewed against repository source on 2026-10-19. Promoted from PROJECTMEM_MAP_DRAFT.md; describes the existing architecture.
+Reviewed against repository source on 2026-10-29, after the inference/ restructure (densebox/ + yolov26/{core,mjpeg,rpi,hdmi}).
 
 ## Project purpose
 
@@ -16,85 +16,43 @@ Intel RealSense D455 RGB/depth capture and INT8 person/face detection on AMD/Xil
 
 ## Entry points
 
-- Python camera diagnostics: camera/camera_test.py, camera/depth_test.py, camera/aligned_depth_test.py.
-- Python browser previews: camera/live_stream.py (port 8080) and camera/live_rgb_depth.py (port 8080).
-- DenseBox: inference/densebox_realsense.cpp (local image diagnostic) and inference/live_densebox_realsense.cpp (MJPEG, port 8081).
-- YOLO: inference/live_yolov26_realsense.cpp (MJPEG, port 8081), inference/live_yolov26_rpi.cpp (Pi video/status sender), and inference/live_yolov26_hdmi.cpp (fullscreen X11 display, synthetic --test-pattern mode).
-- Network-only integration: scripts/mock_yolov26_sender.py; native sender launcher scripts/run_live_yolov26_rpi.py.
+- Python camera diagnostics (bring-up only): tools/camera_bringup/{camera_test,depth_test,aligned_depth_test,live_stream,live_rgb_depth}.py.
+- DenseBox (frozen first experiment): inference/densebox/densebox_realsense.cpp and live_densebox_realsense.cpp (MJPEG, port 8081).
+- YOLO (main): inference/yolov26/mjpeg/live_yolov26_realsense.cpp (MJPEG, port 8081), inference/yolov26/rpi/live_yolov26_rpi.cpp (Pi video/status sender), inference/yolov26/hdmi/live_yolov26_hdmi.cpp (local monitor; --renderer x11|kms, synthetic --test-pattern).
+- Network-only integration: scripts/mock_yolov26_sender.py; launchers scripts/run_live_yolov26_rpi.py and scripts/run_live_yolov26_hdmi.py.
+- Binaries are built to build/ (git-ignored) by scripts/build_*.sh.
 
 ## Structure
 
-- `PROJECTMEM_MAP_DRAFT.md` - original reviewed bootstrap draft, retained for provenance; live navigation is this map.
-- `README.md` - primary board build/run, options, wire contracts, telemetry guide.
+- `README.md` - CV-oriented overview: hardware, architecture, modes, 1080p optimisation study (steps 0-6 table).
 - `requirements.txt` - NumPy/OpenCV only, warning to retain RSUSB pyrealsense2.
-- `.gitignore` - excludes compiled binaries, model artifacts, generated captures, caches.
+- `.gitignore` - excludes build/, model artifacts, generated captures, caches.
 - `AGENTS.md` and `CLAUDE.md` - projectmem bridge; registered id kv260-camera.
-- `camera/` - board-attached Python camera utilities.
-  - `camera/camera_test.py` - capture 640x480 RGB, save d455_test.jpg.
-  - `camera/depth_test.py` - raw simultaneous RGB/depth center-distance diagnostic.
-  - `camera/aligned_depth_test.py` - full-frame depth-to-color alignment diagnostic.
-  - `camera/live_stream.py` - threaded RGB HTTP MJPEG preview, FPS/JPEG options.
-  - `camera/live_rgb_depth.py` - RGB browser stream with aligned central depth measurement.
-- `inference/` - native board inference and reusable Pi networking components.
-  - `inference/densebox_realsense.cpp` - single-shot DenseBox face/depth diagnostic with full-frame depth-to-color alignment.
-  - `inference/live_densebox_realsense.cpp` - live DenseBox MJPEG, sparse depth, system/stage telemetry.
-  - `inference/live_yolov26_realsense.cpp` - YOLO browser MJPEG entry point, renderer handoff, telemetry.
-  - `inference/live_yolov26_rpi.cpp` - native YOLO Pi sender lifecycle, capture, render, status worker.
-  - `inference/yolov26_common.hpp` - hardware-independent constants and inference/detection data types.
-  - `inference/yolov26_realsense_core.hpp` - camera, runner, frame handoff, calibration and monitor interfaces.
-  - `inference/yolov26_realsense_core.cpp` - profiles, letterbox/INT8, VART execution, decode/depth, annotations, hwmon.
-  - `inference/yolov26_rpi_control.hpp` and `inference/yolov26_rpi_control.cpp` - CLI validation, face-state freshness, report/backoff scheduling, telemetry.
-  - `inference/live_yolov26_hdmi.cpp` - YOLO local X11 display entry point, synthetic producer, real capture worker.
-  - `inference/yolov26_hdmi_control.hpp` and `inference/yolov26_hdmi_control.cpp` - dependency-free HDMI CLI validation and aspect-fit geometry.
-  - `inference/yolov26_hdmi_display.hpp` and `inference/yolov26_hdmi_display.cpp` - X11/OpenCV window adapter, black-canvas aspect-fit rendering, key/close exit.
-  - `inference/yolov26_rpi_transport.hpp` and `inference/yolov26_rpi_transport.cpp` - host resolution, deadline-bounded Redis publishing and GStreamer encoder/video transport.
-  - `inference/README.md` - native inference app overview, per-app build scripts, runtime/model requirements.
-- `scripts/` - standalone builds and network tools.
-  - `scripts/build_densebox_realsense.sh` - build DenseBox diagnostic.
-  - `scripts/build_live_densebox.sh` - build live DenseBox, including dpu_task link.
-  - `scripts/build_live_yolov26.sh` - build YOLO MJPEG with shared core.
-  - `scripts/build_live_yolov26_rpi.sh` - build native sender with dependency/RealSense prefix checks.
-  - `scripts/build_live_yolov26_hdmi.sh` - build HDMI display app with RealSense prefix and OpenCV/X11 checks.
-  - `scripts/run_live_yolov26_hdmi.py` - HDMI launcher with offline --check-display/--wake-display X actions.
-  - `scripts/run_live_yolov26_rpi.py` - prefix-aware native sender exec; imports mock dependency helpers.
-  - `scripts/mock_yolov26_sender.py` - synthetic GStreamer video plus independent simulated face Redis publisher, no DPU/camera.
-  - `scripts/README.md` - mock sender setup, wire contract and receiver coordination.
-- `docs/` - deployment/reference docs.
-  - `docs/architecture.md` - high-level camera and DPU flow.
-  - `docs/realsense-rsusb.md` - shutdown kernel Oops, RSUSB installation paths, documented USB 2.0 constraint.
-- `models/` - external-model placeholder directory.
-  - `models/.gitkeep` - placeholder only; deployed xmodels are external and not included.
-- `tests/` - host-side Python and native component fixtures.
-  - `tests/test_mock_yolov26_sender.py` - stdlib unittest mock CLI, Redis freshness/reconnect, pipeline and lifecycle fixtures.
-  - `tests/test_live_yolov26_rpi.py` - unittest native-fixture compiler/runner and launcher tests.
-  - `tests/test_yolov26_rpi_control.cpp` - hardware-independent native CLI/state/scheduler assertions.
-  - `tests/test_yolov26_rpi_transport.cpp` - native Redis/encoder/transport fixtures, requires development libraries.
-  - `tests/test_live_yolov26_hdmi.py` - unittest HDMI launcher/build/control-fixture tests.
-  - `tests/test_yolov26_hdmi_control.cpp` - hardware-independent HDMI CLI/geometry assertions.
-  - `tests/test_yolov26_overlay_options.py` - extraction fixtures for browser CLI parsing and annotation drawing.
+- `tools/camera_bringup/` - Python camera diagnostics + README (not part of the pipeline).
+- `inference/` - native board inference. `inference/README.md` is the index.
+  - `inference/densebox/` - frozen first DPU experiment (densebox_realsense.cpp, live_densebox_realsense.cpp, README).
+  - `inference/yolov26/` - main app; README has model contract, pipeline, shared options.
+    - `core/` - yolov26_common.hpp, yolov26_realsense_core.{hpp,cpp}: profiles, letterbox/INT8, VART, decode, sparse depth, annotations, LatestFrameHandoff, monitors.
+    - `mjpeg/` - live_yolov26_realsense.cpp + README.
+    - `rpi/` - live_yolov26_rpi.cpp, yolov26_rpi_control.{hpp,cpp}, yolov26_rpi_transport.{hpp,cpp} + README.
+    - `hdmi/` - live_yolov26_hdmi.cpp, yolov26_display.hpp (Display interface), yolov26_hdmi_control.{hpp,cpp} (CLI, fit geometry, DisplayTelemetry), yolov26_hdmi_display.{hpp,cpp} (X11/GTK backend), yolov26_kms_display.{hpp,cpp} (DRM/KMS backend) + README.
+- `scripts/` - build scripts, launchers, mock sender, analysis. `scripts/README.md` catalogues every script and holds the mock-sender guide.
+  - `build_densebox_realsense.sh`, `build_live_densebox.sh`, `build_live_yolov26.sh`, `build_live_yolov26_rpi.sh`, `build_live_yolov26_hdmi.sh` - all write to build/.
+  - `run_live_yolov26_hdmi.py` (--check-display/--wake-display), `run_live_yolov26_rpi.py` (isolated dependency env), `mock_yolov26_sender.py`, `summarize_telemetry.py` (logs -> markdown table).
+- `docs/` - `realsense-rsusb.md` (RSUSB backend, USB 3), `performance/` (method README + raw 1080p telemetry logs docs/performance/1080p/step0..6).
+- `models/` - external-model placeholder directory (`.gitkeep` only).
+- `tests/` - host-side tests mirroring inference/yolov26: `tests/yolov26/{hdmi,rpi,mjpeg}/` (Python drivers + native .cpp fixtures); `tests/README.md`. Run `python3 -m unittest discover -s tests` (110 tests, 2 skipped without board libs).
 - `.projectmem/` - project memory: authored map/intent plus tool-managed audit and derived context.
-  - `.projectmem/AI_INSTRUCTIONS.md` - setup/maintenance and event logging rules.
-  - `.projectmem/PROJECT_MAP.md` - authored project purpose, navigable path index, relationships, and setup constraints.
-  - `.projectmem/summary.md` - auto-generated bounded context from events and map purpose; never manually edit.
-  - `.projectmem/events.jsonl` - append-only event log, use MCP.
-  - `.projectmem/plan.md` - future intent, currently empty; no new roadmap inferred.
-  - `.projectmem/issues/` - individual issue histories.
 
 ## Relationships
 
-- `camera/camera_test.py`, `camera/depth_test.py`, `camera/aligned_depth_test.py`, `camera/live_stream.py`, and `camera/live_rgb_depth.py` use `requirements.txt` dependencies and the RSUSB setup documented in `docs/realsense-rsusb.md`.
-- `scripts/build_densebox_realsense.sh` compiles `inference/densebox_realsense.cpp`; `scripts/build_live_densebox.sh` compiles `inference/live_densebox_realsense.cpp`.
-- `scripts/build_live_yolov26.sh` compiles `inference/live_yolov26_realsense.cpp` together with `inference/yolov26_realsense_core.cpp`.
-- `scripts/build_live_yolov26_rpi.sh` compiles `inference/live_yolov26_rpi.cpp` plus `inference/yolov26_realsense_core.cpp`, `inference/yolov26_rpi_control.cpp`, and `inference/yolov26_rpi_transport.cpp`.
-- `inference/live_yolov26_realsense.cpp` and `inference/live_yolov26_rpi.cpp` call `inference/yolov26_realsense_core.hpp`/`inference/yolov26_realsense_core.cpp`; `inference/yolov26_common.hpp` supplies shared types/constants.
-- `inference/live_yolov26_rpi.cpp` uses `inference/yolov26_rpi_control.hpp`/`inference/yolov26_rpi_control.cpp` for state/CLI and `inference/yolov26_rpi_transport.hpp`/`inference/yolov26_rpi_transport.cpp` for network delivery.
-- `scripts/run_live_yolov26_rpi.py` imports dependency environment helpers from `scripts/mock_yolov26_sender.py` and execs the built `inference/live_yolov26_rpi` binary.
-- `tests/test_live_yolov26_rpi.py` imports `scripts/run_live_yolov26_rpi.py` and compiles/runs `tests/test_yolov26_rpi_control.cpp` and `tests/test_yolov26_rpi_transport.cpp` against native sources.
-- `tests/test_mock_yolov26_sender.py` imports `scripts/mock_yolov26_sender.py`.
-- `scripts/build_live_yolov26_hdmi.sh` compiles `inference/live_yolov26_hdmi.cpp` plus `inference/yolov26_realsense_core.cpp`, `inference/yolov26_hdmi_control.cpp`, and `inference/yolov26_hdmi_display.cpp`.
-- `inference/live_yolov26_hdmi.cpp` calls `inference/yolov26_hdmi_control.hpp`/`inference/yolov26_hdmi_control.cpp` for CLI/geometry and `inference/yolov26_hdmi_display.hpp`/`inference/yolov26_hdmi_display.cpp` for X11/HighGUI windowing; it shares `inference/yolov26_realsense_core` for inference and the now nonblocking-capable LatestFrameHandoff.
-- `tests/test_live_yolov26_hdmi.py` imports `scripts/run_live_yolov26_hdmi.py` and compiles/runs `tests/test_yolov26_hdmi_control.cpp` against `inference/yolov26_hdmi_control.cpp`.
-- projectmem MCP appends `.projectmem/events.jsonl` and regenerates `.projectmem/summary.md`; purpose is pulled from this authored `.projectmem/PROJECT_MAP.md`.
+- Each `scripts/build_*.sh` compiles its app from inference/<densebox|yolov26/<mode>> (plus `inference/yolov26/core` for YOLO, via `-I`) into build/.
+- Every YOLO mode calls `inference/yolov26/core/yolov26_realsense_core.hpp/.cpp`; `yolov26_common.hpp` supplies shared types/constants. Includes are bare names resolved by per-build `-I` dirs.
+- `inference/yolov26/hdmi/live_yolov26_hdmi.cpp` picks `HdmiDisplay` (X11) or `KmsDisplay` through the `Display` interface in yolov26_display.hpp; CLI/geometry/telemetry come from yolov26_hdmi_control.
+- `inference/yolov26/rpi/live_yolov26_rpi.cpp` uses yolov26_rpi_control (state/CLI) and yolov26_rpi_transport (network delivery).
+- `scripts/run_live_yolov26_rpi.py` imports dependency helpers from `scripts/mock_yolov26_sender.py` and execs build/live_yolov26_rpi; `scripts/run_live_yolov26_hdmi.py` wraps build/live_yolov26_hdmi.
+- Tests under tests/yolov26/<mode>/ compile the native sources of inference/yolov26/{core,<mode>} and import scripts/; REPO root is four directory levels up.
+- projectmem MCP appends `.projectmem/events.jsonl` and regenerates `.projectmem/summary.md`; purpose is pulled from this authored map.
 
 ## Setup and validation
 

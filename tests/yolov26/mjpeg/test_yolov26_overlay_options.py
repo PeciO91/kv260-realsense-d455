@@ -5,17 +5,18 @@ import subprocess
 import tempfile
 import unittest
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-INFERENCE = os.path.join(REPO, "inference")
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+CORE = os.path.join(REPO, "inference", "yolov26", "core")
+MJPEG = os.path.join(REPO, "inference", "yolov26", "mjpeg")
 
-BROWSER_SOURCE = os.path.join(INFERENCE, "live_yolov26_realsense.cpp")
-CORE_SOURCE = os.path.join(INFERENCE, "yolov26_realsense_core.cpp")
+BROWSER_SOURCE = os.path.join(MJPEG, "live_yolov26_realsense.cpp")
+CORE_SOURCE = os.path.join(CORE, "yolov26_realsense_core.cpp")
 
 
 def compile_binary(source, output):
     cmd = [
         "g++", "-std=c++17", "-O2", "-Wall", "-Wextra",
-        "-I", INFERENCE,
+        "-I", CORE,
         "-x", "c++", "-",
         "-o", output,
     ]

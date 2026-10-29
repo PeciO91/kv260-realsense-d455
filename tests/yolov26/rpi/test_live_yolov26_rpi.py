@@ -6,10 +6,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 SCRIPTS = os.path.join(REPO, "scripts")
-INFERENCE = os.path.join(REPO, "inference")
-TESTS = os.path.join(REPO, "tests")
+CORE = os.path.join(REPO, "inference", "yolov26", "core")
+INFERENCE = os.path.join(REPO, "inference", "yolov26", "rpi")
+TESTS = os.path.dirname(os.path.abspath(__file__))
 
 sys.path.insert(0, SCRIPTS)
 
@@ -41,7 +42,7 @@ def pkg_config_flags(*modules):
 def compile_binary(sources, output, extra_args=()):
     cmd = [
         "g++", "-std=c++17", "-O2", "-Wall", "-Wextra",
-        *sources, "-I", INFERENCE, *extra_args, "-pthread",
+        *sources, "-I", CORE, "-I", INFERENCE, *extra_args, "-pthread",
         "-o", output,
     ]
     result = subprocess.run(

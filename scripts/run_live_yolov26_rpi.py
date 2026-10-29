@@ -52,7 +52,7 @@ def build_arg_parser():
             os.path.dirname(
                 os.path.dirname(os.path.abspath(__file__))
             ),
-            "inference",
+            "build",
             "live_yolov26_rpi",
         ),
     )
