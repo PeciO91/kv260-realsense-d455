@@ -231,12 +231,25 @@ That is −32.7 ms, the whole 78.2 → 45.3 ms drop. The camera still delivered 
 33 ms, so FPS stayed at 29.2 → 29.5. The faster display instead bought headroom: CPU fell
 from 65 % to 33 %.
 
-**Where the time goes now (step 5, per frame):** the capture thread spends 18.6 ms on
-preprocessing (CPU letterbox + quantize), 11.1 ms in the DPU and ~4 ms acquiring, about 34 ms
-in total against the camera's 33 ms frame period. The display side (3.0 ms wait, 1.4 ms draw,
-7.1 ms show) runs on the other thread and has headroom. So the camera and the capture thread
-are now the limit, and the largest remaining cost is CPU preprocessing, not the DPU. Going
-beyond 30 FPS (the D455 offers 848x480@60) would first need faster preprocessing.
+**Where the time goes now (step 5, mean per frame)**
+
+| Thread | Stage | ms |
+|--------|-------|---:|
+| Capture | acquire (wait for camera) | 4.0 |
+| Capture | preprocess (CPU letterbox + INT8 quantize) | 18.6 |
+| Capture | DPU inference | 11.1 |
+| Capture | depth (5x5 grid) | 0.2 |
+| | **Capture thread total** | **33.9** |
+| Display | wait in handoff | 3.0 |
+| Display | draw (boxes + overlay) | 1.4 |
+| Display | show (scale + present) | 7.1 |
+| | **Display thread total** | **11.5** |
+| | Camera frame period (30 FPS) | 33.3 |
+
+The capture thread fills the whole 33 ms frame period, while the display thread has room to
+spare. The camera and capture thread are now the limit, and the largest cost is CPU
+preprocessing, not the DPU. Going beyond 30 FPS (the D455 offers 848x480@60) would first need
+faster preprocessing.
 
 ## Earlier work
 
