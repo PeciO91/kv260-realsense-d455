@@ -4,6 +4,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <fcntl.h>
 #include <stdexcept>
@@ -36,14 +37,196 @@ std::string card_path(int index)
     return "/dev/dri/card" + std::to_string(index);
 }
 
+[[noreturn]] void throw_errno(const std::string& what, int err)
+{
+    throw std::runtime_error(what + ": " + std::strerror(err));
+}
+
+bool read_prop(
+    int fd,
+    uint32_t object_id,
+    uint32_t object_type,
+    const char* name,
+    uint32_t* prop_id,
+    uint64_t* value)
+{
+    bool found = false;
+    drmModeObjectProperties* props =
+        drmModeObjectGetProperties(fd, object_id, object_type);
+    if (!props) {
+        return false;
+    }
+    for (uint32_t i = 0; i < props->count_props && !found; ++i) {
+        drmModePropertyRes* prop =
+            drmModeGetProperty(fd, props->props[i]);
+        if (prop) {
+            if (std::strcmp(prop->name, name) == 0) {
+                found = true;
+                if (prop_id) {
+                    *prop_id = prop->prop_id;
+                }
+                if (value) {
+                    *value = props->prop_values[i];
+                }
+            }
+            drmModeFreeProperty(prop);
+        }
+    }
+    drmModeFreeObjectProperties(props);
+    return found;
+}
+
+bool plane_has_format(const drmModePlane* plane, uint32_t fourcc)
+{
+    for (uint32_t f = 0; f < plane->count_formats; ++f) {
+        if (plane->formats[f] == fourcc) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool pick_crtc(
+    int fd,
+    const drmModeRes* res,
+    const drmModeConnector* conn,
+    uint32_t* crtc_id,
+    int* crtc_index)
+{
+    uint32_t wanted = 0;
+    if (conn->encoder_id) {
+        drmModeEncoder* encoder =
+            drmModeGetEncoder(fd, conn->encoder_id);
+        if (encoder) {
+            wanted = encoder->crtc_id;
+            drmModeFreeEncoder(encoder);
+        }
+    }
+
+    for (int c = 0; c < res->count_crtcs; ++c) {
+        if (wanted && res->crtcs[c] == wanted) {
+            *crtc_id = res->crtcs[c];
+            *crtc_index = c;
+            return true;
+        }
+    }
+
+    for (int e = 0; e < conn->count_encoders; ++e) {
+        drmModeEncoder* encoder =
+            drmModeGetEncoder(fd, conn->encoders[e]);
+        if (!encoder) {
+            continue;
+        }
+        const uint32_t possible = encoder->possible_crtcs;
+        drmModeFreeEncoder(encoder);
+        for (int c = 0; c < res->count_crtcs; ++c) {
+            if (possible & (1u << c)) {
+                *crtc_id = res->crtcs[c];
+                *crtc_index = c;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 } // namespace
 
-KmsDisplay::KmsDisplay(bool fullscreen)
+namespace detail {
+
+cv::Rect kms_content_rect(
+    int image_width,
+    int image_height,
+    int screen_width,
+    int screen_height,
+    bool fullscreen)
+{
+    if (image_width <= 0 || image_height <= 0
+        || screen_width <= 0 || screen_height <= 0) {
+        throw std::invalid_argument(
+            "kms_content_rect requires positive dimensions"
+        );
+    }
+
+    if (!fullscreen
+        && image_width <= screen_width
+        && image_height <= screen_height) {
+        return cv::Rect(
+            (screen_width - image_width) / 2,
+            (screen_height - image_height) / 2,
+            image_width,
+            image_height
+        );
+    }
+
+    const FittedImage fit = fit_image(
+        image_width, image_height, screen_width, screen_height
+    );
+    return cv::Rect(fit.x, fit.y, fit.width, fit.height);
+}
+
+cv::Rect compose_kms_frame(
+    const cv::Mat& image,
+    cv::Mat& destination,
+    bool fullscreen,
+    cv::Mat& resize_scratch)
+{
+    if (image.empty() || image.type() != CV_8UC3) {
+        throw std::invalid_argument(
+            "compose_kms_frame requires a non-empty CV_8UC3 image"
+        );
+    }
+    if (destination.empty()
+        || (destination.type() != CV_8UC4
+            && destination.type() != CV_8UC2)) {
+        throw std::invalid_argument(
+            "compose_kms_frame requires a CV_8UC4 or CV_8UC2"
+            " destination"
+        );
+    }
+
+    const cv::Rect rect = kms_content_rect(
+        image.cols,
+        image.rows,
+        destination.cols,
+        destination.rows,
+        fullscreen
+    );
+
+    const cv::Mat* source = &image;
+    if (rect.width != image.cols || rect.height != image.rows) {
+        cv::resize(
+            image,
+            resize_scratch,
+            rect.size(),
+            0,
+            0,
+            cv::INTER_LINEAR
+        );
+        source = &resize_scratch;
+    }
+
+    cv::Mat roi = destination(rect);
+    cv::cvtColor(
+        *source,
+        roi,
+        destination.type() == CV_8UC4
+            ? cv::COLOR_BGR2BGRA
+            : cv::COLOR_BGR2BGR565
+    );
+    return rect;
+}
+
+} // namespace detail
+
+KmsDisplay::KmsDisplay(bool fullscreen, KmsPlane plane)
     : fullscreen_(fullscreen)
+    , plane_(plane)
 {
     try {
         open_card();
-        select_overlay_plane();
+        select_planes();
+        allocate_frame_buffers();
         setup_crtc();
         setup_terminal();
     } catch (...) {
@@ -68,36 +251,36 @@ void KmsDisplay::open_card()
 
         drmModeRes* res = drmModeGetResources(fd);
         if (res) {
-            for (int c = 0; c < res->count_connectors; ++c) {
+            for (int c = 0;
+                 c < res->count_connectors && connector_id_ == 0;
+                 ++c) {
                 drmModeConnector* conn =
                     drmModeGetConnector(fd, res->connectors[c]);
-                if (conn) {
-                    if (conn->connection == DRM_MODE_CONNECTED
-                        && conn->count_modes > 0) {
-                        connector_id_ = conn->connector_id;
-                        for (int m = 0; m < conn->count_modes; ++m) {
-                            if (conn->modes[m].type
-                                & DRM_MODE_TYPE_PREFERRED) {
-                                mode_ = conn->modes[m];
-                                break;
-                            }
+                if (!conn) {
+                    continue;
+                }
+                if (conn->connection == DRM_MODE_CONNECTED
+                    && conn->count_modes > 0
+                    && pick_crtc(
+                        fd, res, conn, &crtc_id_, &crtc_index_)) {
+                    connector_id_ = conn->connector_id;
+                    for (int m = 0; m < conn->count_modes; ++m) {
+                        if (conn->modes[m].type
+                            & DRM_MODE_TYPE_PREFERRED) {
+                            mode_ = conn->modes[m];
+                            break;
                         }
-                        if (mode_.hdisplay == 0) {
-                            mode_ = conn->modes[0];
-                        }
-                        screen_width_ = mode_.hdisplay;
-                        screen_height_ = mode_.vdisplay;
                     }
-                    drmModeFreeConnector(conn);
+                    if (mode_.hdisplay == 0) {
+                        mode_ = conn->modes[0];
+                    }
+                    screen_width_ = mode_.hdisplay;
+                    screen_height_ = mode_.vdisplay;
                 }
-                if (connector_id_ != 0) {
-                    break;
-                }
+                drmModeFreeConnector(conn);
             }
 
-            if (connector_id_ != 0 && res->count_crtcs > 0) {
-                crtc_id_ = res->crtcs[0];
-                crtc_index_ = 0;
+            if (connector_id_ != 0) {
                 saved_crtc_ = drmModeGetCrtc(fd, crtc_id_);
             }
             drmModeFreeResources(res);
@@ -116,6 +299,11 @@ void KmsDisplay::open_card()
         );
     }
 
+    if (drmSetClientCap(fd_, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1)
+        != 0) {
+        throw_errno("DRM universal planes unavailable", errno);
+    }
+
     if (drmSetMaster(fd_) != 0) {
         throw std::runtime_error(
             "cannot acquire DRM master: stop the X server"
@@ -124,233 +312,248 @@ void KmsDisplay::open_card()
     }
 }
 
-uint32_t find_prop_id(
-    int fd,
-    uint32_t object_id,
-    uint32_t object_type,
-    const char* name)
-{
-    uint32_t prop_id = 0;
-    drmModeObjectProperties* props =
-        drmModeObjectGetProperties(fd, object_id, object_type);
-    if (!props) {
-        return 0;
-    }
-    for (uint32_t i = 0; i < props->count_props; ++i) {
-        drmModePropertyRes* prop =
-            drmModeGetProperty(fd, props->props[i]);
-        if (prop) {
-            if (std::strcmp(prop->name, name) == 0) {
-                prop_id = prop->prop_id;
-            }
-            drmModeFreeProperty(prop);
-        }
-        if (prop_id) {
-            break;
-        }
-    }
-    drmModeFreeObjectProperties(props);
-    return prop_id;
-}
-
-void KmsDisplay::setup_crtc()
-{
-    uint32_t mode_blob = 0;
-    drmModeCreatePropertyBlob(
-        fd_, &mode_, sizeof(mode_), &mode_blob
-    );
-
-    bool video_only = false;
-    if (mode_blob) {
-        const uint32_t conn_crtc = find_prop_id(
-            fd_, connector_id_, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID"
-        );
-        const uint32_t crtc_mode = find_prop_id(
-            fd_, crtc_id_, DRM_MODE_OBJECT_CRTC, "MODE_ID"
-        );
-        const uint32_t crtc_active = find_prop_id(
-            fd_, crtc_id_, DRM_MODE_OBJECT_CRTC, "ACTIVE"
-        );
-
-        drmModeAtomicReq* req = drmModeAtomicAlloc();
-        drmModeAtomicAddProperty(req, connector_id_, conn_crtc, crtc_id_);
-        drmModeAtomicAddProperty(req, crtc_id_, crtc_mode, mode_blob);
-        drmModeAtomicAddProperty(req, crtc_id_, crtc_active, 1);
-
-        int rc = drmModeAtomicCommit(
-            fd_,
-            req,
-            DRM_MODE_ATOMIC_TEST_ONLY
-                | DRM_MODE_ATOMIC_ALLOW_MODESET,
-            nullptr
-        );
-        if (rc == 0) {
-            rc = drmModeAtomicCommit(
-                fd_,
-                req,
-                DRM_MODE_ATOMIC_ALLOW_MODESET,
-                nullptr
-            );
-        }
-        drmModeAtomicFree(req);
-        drmModeDestroyPropertyBlob(fd_, mode_blob);
-        video_only = rc == 0;
-    }
-
-    if (video_only) {
-        const uint32_t crtc_mask = 1u << crtc_index_;
-        uint32_t primary_plane = 0;
-        for (uint32_t id = 30; id < 70; ++id) {
-            if (id == plane_id_) {
-                continue;
-            }
-            drmModePlane* plane = drmModeGetPlane(fd_, id);
-            if (plane) {
-                if (!primary_plane
-                    && (plane->possible_crtcs & crtc_mask)) {
-                    primary_plane = id;
-                }
-                drmModeFreePlane(plane);
-            }
-        }
-
-        if (primary_plane) {
-            create_dumb(
-                primary_fb_,
-                screen_width_,
-                screen_height_,
-                32,
-                DRM_FORMAT_ARGB8888
-            );
-            std::memset(primary_fb_.map, 0, primary_fb_.size);
-
-            drmModeSetCrtc(
-                fd_,
-                crtc_id_,
-                primary_fb_.fb_id,
-                0,
-                0,
-                &connector_id_,
-                1,
-                &mode_
-            );
-
-            const uint32_t alpha_prop = find_prop_id(
-                fd_, primary_plane,
-                DRM_MODE_OBJECT_PLANE, "alpha"
-            );
-            if (alpha_prop) {
-                drmModeObjectSetProperty(
-                    fd_, primary_plane,
-                    DRM_MODE_OBJECT_PLANE, alpha_prop, 0
-                );
-            }
-            const uint32_t galpha_prop = find_prop_id(
-                fd_, primary_plane,
-                DRM_MODE_OBJECT_PLANE, "g_alpha_en"
-            );
-            if (galpha_prop) {
-                drmModeObjectSetProperty(
-                    fd_, primary_plane,
-                    DRM_MODE_OBJECT_PLANE, galpha_prop, 0
-                );
-            }
-        }
-        return;
-    }
-
-    std::fprintf(
-        stderr,
-        "[kms] video-only CRTC rejected;"
-        " using primary plane with software scaling\n"
-    );
-    primary_blit_ = true;
-    create_dumb(
-        primary_fb_,
-        screen_width_,
-        screen_height_,
-        16,
-        DRM_FORMAT_RGB565
-    );
-    std::memset(primary_fb_.map, 0, primary_fb_.size);
-
-    if (drmModeSetCrtc(
-            fd_,
-            crtc_id_,
-            primary_fb_.fb_id,
-            0,
-            0,
-            &connector_id_,
-            1,
-            &mode_) != 0) {
-        throw std::runtime_error(
-            std::string("drmModeSetCrtc failed: ")
-            + std::strerror(errno)
-        );
-    }
-}
-
-void KmsDisplay::select_overlay_plane()
+void KmsDisplay::select_planes()
 {
     drmModePlaneRes* planes = drmModeGetPlaneResources(fd_);
     if (!planes) {
         throw std::runtime_error("no DRM planes available");
     }
 
-    for (uint32_t i = 0; i < planes->count_planes && !plane_id_; ++i) {
+    const uint32_t crtc_mask = 1u << crtc_index_;
+    const uint32_t primary_format = plane_ == KmsPlane::Overlay
+        ? DRM_FORMAT_ARGB8888
+        : DRM_FORMAT_RGB565;
+
+    for (uint32_t i = 0; i < planes->count_planes; ++i) {
         drmModePlane* plane = drmModeGetPlane(fd_, planes->planes[i]);
         if (!plane) {
             continue;
         }
-
         const uint32_t id = plane->plane_id;
-        const bool usable = plane->possible_crtcs & (1u << crtc_index_);
-        bool has_xr24 = false;
-        for (uint32_t f = 0; f < plane->count_formats; ++f) {
-            if (plane->formats[f] == DRM_FORMAT_XRGB8888) {
-                has_xr24 = true;
-                break;
-            }
-        }
+        const bool usable = plane->possible_crtcs & crtc_mask;
+        const bool has_primary_format =
+            plane_has_format(plane, primary_format);
+        const bool has_xr24 =
+            plane_has_format(plane, DRM_FORMAT_XRGB8888);
         drmModeFreePlane(plane);
-
-        if (!usable || !has_xr24) {
+        if (!usable) {
             continue;
         }
 
-        drmModeObjectProperties* props =
-            drmModeObjectGetProperties(
-                fd_, id, DRM_MODE_OBJECT_PLANE
-            );
-        bool overlay = false;
-        if (props) {
-            for (uint32_t p = 0; p < props->count_props; ++p) {
-                drmModePropertyRes* prop =
-                    drmModeGetProperty(fd_, props->props[p]);
-                if (prop) {
-                    if (std::strcmp(prop->name, "type") == 0
-                        && props->prop_values[p]
-                            == DRM_PLANE_TYPE_OVERLAY) {
-                        overlay = true;
-                    }
-                    drmModeFreeProperty(prop);
-                }
-            }
-            drmModeFreeObjectProperties(props);
+        uint64_t type = 0;
+        if (!read_prop(
+                fd_, id, DRM_MODE_OBJECT_PLANE, "type", nullptr,
+                &type)) {
+            continue;
         }
 
-        if (overlay) {
-            plane_id_ = id;
+        if (type == DRM_PLANE_TYPE_PRIMARY
+            && !primary_plane_id_
+            && has_primary_format) {
+            primary_plane_id_ = id;
+        } else if (type == DRM_PLANE_TYPE_OVERLAY
+                   && !overlay_plane_id_
+                   && (has_xr24 || plane_ == KmsPlane::Primary)) {
+            overlay_plane_id_ = id;
         }
     }
 
     drmModeFreePlaneResources(planes);
 
-    if (!plane_id_) {
+    if (!primary_plane_id_) {
+        throw std::runtime_error(
+            plane_ == KmsPlane::Overlay
+                ? "no primary DRM plane with ARGB8888 support"
+                : "no primary DRM plane with RGB565 support"
+        );
+    }
+    if (plane_ == KmsPlane::Overlay && !overlay_plane_id_) {
         throw std::runtime_error(
             "no usable DRM overlay plane with XR24 support"
         );
     }
+
+    present_plane_id_ = plane_ == KmsPlane::Overlay
+        ? overlay_plane_id_
+        : primary_plane_id_;
+}
+
+void KmsDisplay::allocate_frame_buffers()
+{
+    const bool overlay = plane_ == KmsPlane::Overlay;
+    frame_type_ = overlay ? CV_8UC4 : CV_8UC2;
+
+    for (auto& buffer : frame_fbs_) {
+        create_dumb(
+            buffer,
+            screen_width_,
+            screen_height_,
+            overlay ? 32 : 16,
+            overlay ? DRM_FORMAT_XRGB8888 : DRM_FORMAT_RGB565
+        );
+        std::memset(buffer.map, 0, buffer.size);
+    }
+}
+
+void KmsDisplay::save_blending()
+{
+    blending_.plane_id = primary_plane_id_;
+    const bool alpha = read_prop(
+        fd_, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "alpha",
+        &blending_.alpha_prop, &blending_.alpha
+    );
+    const bool galpha = read_prop(
+        fd_, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "g_alpha_en",
+        &blending_.galpha_prop, &blending_.galpha
+    );
+    if (!alpha) {
+        blending_.alpha_prop = 0;
+    }
+    if (!galpha) {
+        blending_.galpha_prop = 0;
+    }
+    blending_.saved = alpha || galpha;
+
+    std::fprintf(
+        stderr,
+        "[kms] graphics plane %u blending before: g_alpha_en=%s%llu"
+        " alpha=%s%llu\n",
+        primary_plane_id_,
+        galpha ? "" : "n/a:",
+        static_cast<unsigned long long>(blending_.galpha),
+        alpha ? "" : "n/a:",
+        static_cast<unsigned long long>(blending_.alpha)
+    );
+}
+
+void KmsDisplay::apply_blending(uint64_t galpha, uint64_t alpha)
+{
+    if (!blending_.saved) {
+        std::fprintf(
+            stderr,
+            "[kms] graphics plane has no alpha properties;"
+            " leaving blending unchanged\n"
+        );
+        return;
+    }
+
+    if (blending_.galpha_prop
+        && drmModeObjectSetProperty(
+               fd_, primary_plane_id_, DRM_MODE_OBJECT_PLANE,
+               blending_.galpha_prop, galpha) != 0) {
+        throw_errno("set g_alpha_en failed", errno);
+    }
+    if (blending_.alpha_prop
+        && drmModeObjectSetProperty(
+               fd_, primary_plane_id_, DRM_MODE_OBJECT_PLANE,
+               blending_.alpha_prop, alpha) != 0) {
+        throw_errno("set alpha failed", errno);
+    }
+
+    uint64_t read_galpha = 0;
+    uint64_t read_alpha = 0;
+    read_prop(
+        fd_, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "g_alpha_en",
+        nullptr, &read_galpha
+    );
+    read_prop(
+        fd_, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "alpha",
+        nullptr, &read_alpha
+    );
+    std::fprintf(
+        stderr,
+        "[kms] graphics plane blending now: g_alpha_en=%llu"
+        " alpha=%llu\n",
+        static_cast<unsigned long long>(read_galpha),
+        static_cast<unsigned long long>(read_alpha)
+    );
+}
+
+void KmsDisplay::restore_blending()
+{
+    if (!blending_.saved) {
+        return;
+    }
+    if (blending_.galpha_prop
+        && drmModeObjectSetProperty(
+               fd_, blending_.plane_id, DRM_MODE_OBJECT_PLANE,
+               blending_.galpha_prop, blending_.galpha) != 0) {
+        std::fprintf(
+            stderr, "[kms] restore g_alpha_en failed: %s\n",
+            std::strerror(errno)
+        );
+    }
+    if (blending_.alpha_prop
+        && drmModeObjectSetProperty(
+               fd_, blending_.plane_id, DRM_MODE_OBJECT_PLANE,
+               blending_.alpha_prop, blending_.alpha) != 0) {
+        std::fprintf(
+            stderr, "[kms] restore alpha failed: %s\n",
+            std::strerror(errno)
+        );
+    }
+    blending_.saved = false;
+}
+
+void KmsDisplay::setup_crtc()
+{
+    save_blending();
+
+    uint32_t bound_fb = frame_fbs_[0].fb_id;
+    if (plane_ == KmsPlane::Overlay) {
+        create_dumb(
+            primary_fb_,
+            screen_width_,
+            screen_height_,
+            32,
+            DRM_FORMAT_ARGB8888
+        );
+        std::memset(primary_fb_.map, 0, primary_fb_.size);
+        bound_fb = primary_fb_.fb_id;
+    }
+
+    if (drmModeSetCrtc(
+            fd_,
+            crtc_id_,
+            bound_fb,
+            0,
+            0,
+            &connector_id_,
+            1,
+            &mode_) != 0) {
+        throw_errno("drmModeSetCrtc failed", errno);
+    }
+
+    if (plane_ == KmsPlane::Overlay) {
+        apply_blending(1, 0);
+    } else {
+        apply_blending(1, 255);
+        frame_index_ = 1;
+        if (overlay_plane_id_
+            && drmModeSetPlane(
+                   fd_, overlay_plane_id_, crtc_id_, 0,
+                   0, 0, 0, 0, 0, 0, 0, 0, 0) != 0) {
+            std::fprintf(
+                stderr, "[kms] overlay disable failed: %s\n",
+                std::strerror(errno)
+            );
+        }
+    }
+
+    std::fprintf(
+        stderr,
+        "[kms] %s plane=%u crtc=%u connector=%u mode=%dx%d"
+        " graphics_plane=%u overlay_plane=%u fb_pitch=%u\n",
+        plane_ == KmsPlane::Overlay ? "overlay" : "primary",
+        present_plane_id_,
+        crtc_id_,
+        connector_id_,
+        screen_width_,
+        screen_height_,
+        primary_plane_id_,
+        overlay_plane_id_,
+        frame_fbs_[0].pitch
+    );
 }
 
 void KmsDisplay::create_dumb(
@@ -366,10 +569,7 @@ void KmsDisplay::create_dumb(
     create.bpp = bpp;
 
     if (drmIoctl(fd_, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0) {
-        throw std::runtime_error(
-            std::string("CREATE_DUMB failed: ")
-            + std::strerror(errno)
-        );
+        throw_errno("CREATE_DUMB failed", errno);
     }
 
     buffer.handle = create.handle;
@@ -392,19 +592,13 @@ void KmsDisplay::create_dumb(
             offsets,
             &buffer.fb_id,
             0) != 0) {
-        throw std::runtime_error(
-            std::string("drmModeAddFB2 failed: ")
-            + std::strerror(errno)
-        );
+        throw_errno("drmModeAddFB2 failed", errno);
     }
 
     drm_mode_map_dumb map{};
     map.handle = buffer.handle;
     if (drmIoctl(fd_, DRM_IOCTL_MODE_MAP_DUMB, &map) != 0) {
-        throw std::runtime_error(
-            std::string("MAP_DUMB failed: ")
-            + std::strerror(errno)
-        );
+        throw_errno("MAP_DUMB failed", errno);
     }
 
     buffer.map = mmap(
@@ -416,11 +610,9 @@ void KmsDisplay::create_dumb(
         map.offset
     );
     if (buffer.map == MAP_FAILED) {
+        const int err = errno;
         buffer.map = nullptr;
-        throw std::runtime_error(
-            std::string("mmap dumb buffer failed: ")
-            + std::strerror(errno)
-        );
+        throw_errno("mmap dumb buffer failed", err);
     }
 }
 
@@ -440,25 +632,6 @@ void KmsDisplay::destroy_dumb(DumbBuffer& buffer)
         drmIoctl(fd_, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
         buffer.handle = 0;
     }
-}
-
-bool KmsDisplay::ensure_frame_buffers(int width, int height)
-{
-    if (frame_fbs_[0].width == width
-        && frame_fbs_[0].height == height
-        && frame_fbs_[0].map) {
-        return true;
-    }
-
-    try {
-        for (auto& buffer : frame_fbs_) {
-            destroy_dumb(buffer);
-            create_dumb(buffer, width, height, 32, DRM_FORMAT_XRGB8888);
-        }
-    } catch (...) {
-        return false;
-    }
-    return true;
 }
 
 void KmsDisplay::setup_terminal()
@@ -498,23 +671,33 @@ void KmsDisplay::restore_terminal()
 void KmsDisplay::teardown()
 {
     if (fd_ >= 0) {
-        if (plane_id_) {
-            drmModeSetPlane(
-                fd_, plane_id_, crtc_id_, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0
+        if (overlay_plane_id_
+            && drmModeSetPlane(
+                   fd_, overlay_plane_id_, crtc_id_, 0,
+                   0, 0, 0, 0, 0, 0, 0, 0, 0) != 0) {
+            std::fprintf(
+                stderr, "[kms] overlay disable failed: %s\n",
+                std::strerror(errno)
             );
         }
+        restore_blending();
         if (saved_crtc_) {
-            drmModeSetCrtc(
-                fd_,
-                saved_crtc_->crtc_id,
-                saved_crtc_->buffer_id,
-                saved_crtc_->x,
-                saved_crtc_->y,
-                &connector_id_,
-                1,
-                &saved_crtc_->mode
-            );
+            if (saved_crtc_->mode_valid && saved_crtc_->buffer_id) {
+                if (drmModeSetCrtc(
+                        fd_,
+                        saved_crtc_->crtc_id,
+                        saved_crtc_->buffer_id,
+                        saved_crtc_->x,
+                        saved_crtc_->y,
+                        &connector_id_,
+                        1,
+                        &saved_crtc_->mode) != 0) {
+                    std::fprintf(
+                        stderr, "[kms] restore CRTC failed: %s\n",
+                        std::strerror(errno)
+                    );
+                }
+            }
             drmModeFreeCrtc(saved_crtc_);
             saved_crtc_ = nullptr;
         }
@@ -545,115 +728,45 @@ bool KmsDisplay::show(const cv::Mat& image)
         return false;
     }
 
-    if (primary_blit_) {
-        const FittedImage fit = fullscreen_
-            ? fit_image(
-                image.cols,
-                image.rows,
-                screen_width_,
-                screen_height_)
-            : FittedImage{
-                image.cols,
-                image.rows,
-                (screen_width_ - image.cols) / 2,
-                (screen_height_ - image.rows) / 2};
-
-        cv::Mat fb_view(
-            screen_height_,
-            screen_width_,
-            CV_8UC2,
-            primary_fb_.map,
-            primary_fb_.pitch
-        );
-        fb_view.setTo(0);
-
-        cv::Mat resized;
-        cv::resize(image, resized, cv::Size(fit.width, fit.height));
-        cv::Mat roi = fb_view(
-            cv::Rect(fit.x, fit.y, fit.width, fit.height)
-        );
-        cv::cvtColor(resized, roi, cv::COLOR_BGR2BGR565);
-
-        poll_keys();
-        return window_open_;
-    }
-
-    if (!ensure_frame_buffers(image.cols, image.rows)) {
-        throw std::runtime_error(
-            "cannot allocate KMS frame buffers"
-        );
+    const cv::Rect rect = detail::kms_content_rect(
+        image.cols,
+        image.rows,
+        screen_width_,
+        screen_height_,
+        fullscreen_
+    );
+    if (rect != content_rect_) {
+        for (auto& buffer : frame_fbs_) {
+            std::memset(buffer.map, 0, buffer.size);
+        }
+        content_rect_ = rect;
     }
 
     DumbBuffer& fb = frame_fbs_[frame_index_];
     cv::Mat dst(
-        image.rows,
-        image.cols,
-        CV_8UC4,
+        screen_height_,
+        screen_width_,
+        frame_type_,
         fb.map,
         fb.pitch
     );
-    cv::cvtColor(image, dst, cv::COLOR_BGR2BGRA);
+    detail::compose_kms_frame(image, dst, fullscreen_, resize_scratch_);
 
-    int dst_w = image.cols;
-    int dst_h = image.rows;
-    if (hw_scaling_ && fullscreen_) {
-        const FittedImage fit = fit_image(
-            image.cols,
-            image.rows,
-            screen_width_,
-            screen_height_
-        );
-        dst_w = fit.width;
-        dst_h = fit.height;
-    }
-
-    int rc = drmModeSetPlane(
-        fd_,
-        plane_id_,
-        crtc_id_,
-        fb.fb_id,
-        0,
-        (screen_width_ - dst_w) / 2,
-        (screen_height_ - dst_h) / 2,
-        dst_w,
-        dst_h,
-        0,
-        0,
-        static_cast<uint32_t>(image.cols) << 16,
-        static_cast<uint32_t>(image.rows) << 16
-    );
-
-    if (rc != 0
-        && hw_scaling_
-        && (dst_w != image.cols || dst_h != image.rows)) {
-        hw_scaling_ = false;
-        std::fprintf(
-            stderr,
-            "[kms] plane scaling unsupported;"
-            " showing native size\n"
-        );
-        rc = drmModeSetPlane(
+    if (drmModeSetPlane(
             fd_,
-            plane_id_,
+            present_plane_id_,
             crtc_id_,
             fb.fb_id,
             0,
-            (screen_width_ - image.cols) / 2,
-            (screen_height_ - image.rows) / 2,
-            image.cols,
-            image.rows,
             0,
             0,
-            static_cast<uint32_t>(image.cols) << 16,
-            static_cast<uint32_t>(image.rows) << 16
-        );
-    }
-
-    if (rc != 0) {
-        throw std::runtime_error(
-            std::string("drmModeSetPlane failed: ")
-            + std::strerror(errno)
-        );
+            screen_width_,
+            screen_height_,
+            0,
+            0,
+            static_cast<uint32_t>(screen_width_) << 16,
+            static_cast<uint32_t>(screen_height_) << 16) != 0) {
+        throw_errno("drmModeSetPlane failed", errno);
     }
 
     frame_index_ ^= 1;

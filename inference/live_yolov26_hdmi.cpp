@@ -310,7 +310,12 @@ int main(int argc, char* argv[])
 
         std::unique_ptr<Display> display;
         if (options.renderer == "kms") {
-            display.reset(new KmsDisplay(options.fullscreen));
+            display.reset(new KmsDisplay(
+                options.fullscreen,
+                options.kms_plane == "overlay"
+                    ? KmsPlane::Overlay
+                    : KmsPlane::Primary
+            ));
         } else {
             display.reset(new HdmiDisplay(
                 options.display,

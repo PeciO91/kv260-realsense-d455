@@ -87,6 +87,48 @@ class ControlFixtureTest(unittest.TestCase):
             )
 
 
+def _pkg_config_exists(*modules):
+    return bool(shutil.which("pkg-config")) and subprocess.run(
+        ["pkg-config", "--exists", *modules]
+    ).returncode == 0
+
+
+@unittest.skipUnless(
+    shutil.which("g++") and _pkg_config_exists("opencv4", "libdrm"),
+    "opencv4/libdrm development files unavailable",
+)
+class KmsFixtureTest(unittest.TestCase):
+    def test_kms_composition_fixture(self):
+        flags = subprocess.run(
+            ["pkg-config", "--cflags", "--libs", "opencv4", "libdrm"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = os.path.join(tmp, "test_kms_display")
+            compile_binary(
+                [
+                    os.path.join(
+                        TESTS, "test_yolov26_kms_display.cpp"
+                    ),
+                    os.path.join(
+                        INFERENCE, "yolov26_kms_display.cpp"
+                    ),
+                    os.path.join(
+                        INFERENCE, "yolov26_hdmi_control.cpp"
+                    ),
+                ],
+                binary,
+                flags,
+            )
+            result = subprocess.run(
+                [binary], capture_output=True, text=True, timeout=60
+            )
+            self.assertEqual(
+                0, result.returncode,
+                "%s\n%s" % (result.stdout, result.stderr),
+            )
+
+
 class LauncherActionTest(unittest.TestCase):
     def _patched_run(self, returncode=0, stdout=""):
         completed = subprocess.CompletedProcess(
@@ -354,7 +396,7 @@ class BuildScriptTest(unittest.TestCase):
             rs = self._rs_prefix(tmp)
             capture = {}
             bindir = self._fake_env(
-                tmp, ["opencv4", "x11"], capture
+                tmp, ["opencv4", "x11", "gtk+-3.0", "libdrm"], capture
             )
             env_extra = {"PATH": bindir + ":" + os.environ["PATH"]}
             result = self._run_build(
@@ -370,6 +412,12 @@ class BuildScriptTest(unittest.TestCase):
             self.assertIn("live_yolov26_hdmi.cpp", log)
             self.assertIn("yolov26_hdmi_control.cpp", log)
             self.assertIn("yolov26_hdmi_display.cpp", log)
+            self.assertIn("yolov26_kms_display.cpp", log)
+            self.assertIn(
+                "pkg-config --cflags --libs "
+                "opencv4 x11 gtk+-3.0 libdrm",
+                log,
+            )
             self.assertIn("yolov26_realsense_core.cpp", log)
             self.assertIn("rpath", log)
 

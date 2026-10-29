@@ -13,6 +13,14 @@ _Loose thoughts, not yet committed to._
 ## Active plans
 _What we're working toward now. Use `- [ ]` / `- [x]` checklists._
 
+- [ ] #0012 KMS black screen — Phase 2 at the board with a monitor. Phase 1 (code + headless
+  checks) done, uncommitted; staged build `/tmp/kv260-kms.2Ccm8T` on `ssh fpga`. Run
+  `./inference/live_yolov26_hdmi --renderer kms --test-pattern --duration-seconds 30
+  --kms-plane primary|overlay --fullscreen true|false` (X stopped) and confirm bars are
+  visible/animating; then q/Esc + Ctrl-C exit and console recovery; then a real camera run.
+  If overlay is black but primary visible: blending/DMA. If both black with clean dmesg:
+  KD_GRAPHICS VT switch, 1024x768 mode. Do not `record_fix` until visually confirmed.
+
 ## Next
 _Queued, but not started._
 

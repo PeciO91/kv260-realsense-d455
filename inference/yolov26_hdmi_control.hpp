@@ -17,6 +17,7 @@ struct Options {
     InferenceOptions inference;
     std::string display = DEFAULT_DISPLAY;
     std::string renderer = "x11";
+    std::string kms_plane = "primary";
     bool fullscreen = true;
     bool telemetry = false;
     bool test_pattern = false;

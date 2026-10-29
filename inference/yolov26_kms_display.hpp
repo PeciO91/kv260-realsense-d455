@@ -11,9 +11,31 @@
 namespace yolov26 {
 namespace hdmi {
 
+enum class KmsPlane {
+    Primary,
+    Overlay,
+};
+
+namespace detail {
+
+cv::Rect kms_content_rect(
+    int image_width,
+    int image_height,
+    int screen_width,
+    int screen_height,
+    bool fullscreen);
+
+cv::Rect compose_kms_frame(
+    const cv::Mat& image,
+    cv::Mat& destination,
+    bool fullscreen,
+    cv::Mat& resize_scratch);
+
+} // namespace detail
+
 class KmsDisplay : public Display {
 public:
-    explicit KmsDisplay(bool fullscreen);
+    KmsDisplay(bool fullscreen, KmsPlane plane);
     ~KmsDisplay() override;
 
     KmsDisplay(const KmsDisplay&) = delete;
@@ -35,9 +57,22 @@ private:
         int height = 0;
     };
 
+    struct Blending {
+        bool saved = false;
+        uint32_t plane_id = 0;
+        uint32_t alpha_prop = 0;
+        uint32_t galpha_prop = 0;
+        uint64_t alpha = 0;
+        uint64_t galpha = 0;
+    };
+
     void open_card();
+    void select_planes();
+    void allocate_frame_buffers();
     void setup_crtc();
-    void select_overlay_plane();
+    void save_blending();
+    void apply_blending(uint64_t galpha, uint64_t alpha);
+    void restore_blending();
     void create_dumb(
         DumbBuffer& buffer,
         int width,
@@ -45,7 +80,6 @@ private:
         uint32_t bpp,
         uint32_t fourcc);
     void destroy_dumb(DumbBuffer& buffer);
-    bool ensure_frame_buffers(int width, int height);
     void poll_keys();
     void setup_terminal();
     void restore_terminal();
@@ -53,20 +87,25 @@ private:
 
     int fd_ = -1;
     bool fullscreen_;
+    KmsPlane plane_;
     bool window_open_ = true;
-    bool hw_scaling_ = true;
-    bool primary_blit_ = false;
     int screen_width_ = 0;
     int screen_height_ = 0;
     uint32_t crtc_id_ = 0;
     int crtc_index_ = 0;
     uint32_t connector_id_ = 0;
-    uint32_t plane_id_ = 0;
+    uint32_t primary_plane_id_ = 0;
+    uint32_t overlay_plane_id_ = 0;
+    uint32_t present_plane_id_ = 0;
     drmModeCrtc* saved_crtc_ = nullptr;
     drmModeModeInfo mode_{};
+    Blending blending_;
     DumbBuffer primary_fb_;
     DumbBuffer frame_fbs_[2];
     int frame_index_ = 0;
+    int frame_type_ = 0;
+    cv::Rect content_rect_;
+    cv::Mat resize_scratch_;
     bool stdin_raw_ = false;
     struct termios saved_termios_{};
     int saved_stdin_flags_ = -1;

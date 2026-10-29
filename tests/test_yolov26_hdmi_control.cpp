@@ -91,6 +91,34 @@ void test_parsing()
     check(!o.test_pattern, "test pattern default off");
     check(!o.duration_set, "duration unset default");
 
+    check(o.renderer == "x11", "renderer default x11");
+    check(o.kms_plane == "primary", "kms plane default primary");
+
+    check(parse_ok({"app", "--renderer", "kms"}, o),
+          "kms renderer accepted");
+    check(o.kms_plane == "primary",
+          "kms plane stays primary by default");
+    check(parse_ok({"app", "--renderer", "kms",
+                    "--kms-plane", "overlay"}, o),
+          "kms overlay plane accepted");
+    check(o.kms_plane == "overlay", "kms overlay plane stored");
+    check(parse_ok({"app", "--kms-plane", "overlay",
+                    "--renderer", "kms"}, o),
+          "kms plane before renderer accepted");
+    check(o.kms_plane == "overlay",
+          "kms plane order independent");
+    check(parse_fails({"app", "--renderer", "kms",
+                       "--kms-plane", "cursor"}),
+          "invalid kms plane rejected");
+    check(parse_fails({"app", "--kms-plane", "overlay"}),
+          "kms plane rejected with default x11 renderer");
+    check(parse_fails({"app", "--renderer", "x11",
+                       "--kms-plane", "primary"}),
+          "kms plane rejected with explicit x11 renderer");
+    check(parse_fails({"app", "--renderer", "kms",
+                       "--kms-plane"}),
+          "bare --kms-plane rejected");
+
     check(parse_ok({"app", "--display", ":1"}, o),
           "display override accepted");
     check(o.display == ":1", "display stored");

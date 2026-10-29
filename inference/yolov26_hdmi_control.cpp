@@ -108,6 +108,8 @@ void print_usage(const char* argv0)
         << "Options:" << std::endl
         << "  --renderer x11|kms        Display backend"
         << " (default x11; kms needs Xorg stopped)" << std::endl
+        << "  --kms-plane primary|overlay  KMS output plane"
+        << " (default primary; kms only)" << std::endl
         << "  --display NAME            X display"
         << " (default " << DEFAULT_DISPLAY << ")" << std::endl
         << "  --fullscreen true|false   Fullscreen window"
@@ -155,6 +157,7 @@ ParseResult parse_options(int argc, char* argv[])
 {
     ParseResult result;
     Options& options = result.options;
+    bool kms_plane_set = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string argument(argv[i]);
@@ -183,6 +186,15 @@ ParseResult parse_options(int argc, char* argv[])
                     "--renderer must be x11 or kms"
                 );
             }
+        } else if (argument == "--kms-plane") {
+            options.kms_plane = require_value("--kms-plane");
+            if (options.kms_plane != "primary"
+                && options.kms_plane != "overlay") {
+                throw std::invalid_argument(
+                    "--kms-plane must be primary or overlay"
+                );
+            }
+            kms_plane_set = true;
         } else if (argument == "--fullscreen") {
             options.fullscreen = parse_bool(
                 "--fullscreen",
@@ -260,6 +272,12 @@ ParseResult parse_options(int argc, char* argv[])
                 "Unknown option: " + argument
             );
         }
+    }
+
+    if (kms_plane_set && options.renderer != "kms") {
+        throw std::invalid_argument(
+            "--kms-plane requires --renderer kms"
+        );
     }
 
     if ((options.inference.depth_width == 0)
